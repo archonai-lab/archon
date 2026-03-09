@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Zig (legacy scaffold — will be removed)
+.zig-cache/
+zig-out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data (lives in ~/.archon/, not in repo)
+data/
+
+# Drizzle artifacts
+drizzle/meta/
+
+# Test coverage
+coverage/
+
+# Logs
+*.log
