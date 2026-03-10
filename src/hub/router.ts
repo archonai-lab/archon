@@ -7,9 +7,12 @@ import { agents } from "../db/schema.js";
 import { SessionManager } from "./session.js";
 import { discoverAgents } from "../registry/discovery.js";
 import { getAgentCard } from "../registry/agent-card.js";
+import { MeetingRoom } from "../meeting/meeting-room.js";
 import { logger } from "../utils/logger.js";
 
 export class Router {
+  private activeMeetings = new Map<string, MeetingRoom>();
+
   constructor(private sessions: SessionManager) {}
 
   async handleRaw(socket: WebSocket, raw: string): Promise<void> {
@@ -62,6 +65,59 @@ export class Router {
         await this.handleDirectoryGet(agentId, message.agentId);
         break;
 
+      // --- Meeting messages ---
+      case "meeting.create":
+        await this.handleMeetingCreate(agentId, message);
+        break;
+
+      case "meeting.join":
+        this.handleMeetingJoin(agentId, message.meetingId);
+        break;
+
+      case "meeting.leave":
+        this.handleMeetingLeave(agentId, message.meetingId);
+        break;
+
+      case "meeting.speak":
+        await this.handleMeetingSpeak(agentId, message.meetingId, message.content);
+        break;
+
+      case "meeting.relevance":
+        this.handleMeetingRelevance(agentId, message.meetingId, message.level);
+        break;
+
+      case "meeting.advance":
+        await this.handleMeetingAdvance(agentId, message.meetingId);
+        break;
+
+      case "meeting.propose":
+        await this.handleMeetingPropose(agentId, message.meetingId, message.proposal);
+        break;
+
+      case "meeting.vote":
+        await this.handleMeetingVote(
+          agentId,
+          message.meetingId,
+          message.proposalIndex,
+          message.vote,
+          message.reason
+        );
+        break;
+
+      case "meeting.assign":
+        await this.handleMeetingAssign(
+          agentId,
+          message.meetingId,
+          message.task,
+          message.assigneeId,
+          message.deadline
+        );
+        break;
+
+      case "meeting.acknowledge":
+        await this.handleMeetingAcknowledge(agentId, message.meetingId, message.taskIndex);
+        break;
+
       default:
         this.sessions.send(
           agentId,
@@ -69,6 +125,8 @@ export class Router {
         );
     }
   }
+
+  // --- Auth ---
 
   private async handleAuth(socket: WebSocket, data: unknown): Promise<void> {
     const parsed = AuthMessage.safeParse(data);
@@ -83,7 +141,6 @@ export class Router {
 
     const { agentId, token } = parsed.data;
 
-    // Look up agent in database
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, agentId),
     });
@@ -98,8 +155,7 @@ export class Router {
       return;
     }
 
-    // MVP auth: token must match agent ID (simple pre-shared token)
-    // TODO: Replace with JWT or proper token validation
+    // MVP auth: token must match agent ID
     if (token !== agentId) {
       socket.send(
         JSON.stringify(createError(ErrorCode.AUTH_FAILED, "Invalid token"))
@@ -108,29 +164,35 @@ export class Router {
       return;
     }
 
-    // Create session
     this.sessions.add(agentId, socket);
 
-    // Update agent status in DB
     await db
       .update(agents)
       .set({ status: "online", updatedAt: new Date() })
       .where(eq(agents.id, agentId));
 
-    // Generate fresh agent card on auth
     const agentCard = await getAgentCard(agentId);
 
-    // Send auth.ok
+    // Find pending invites for this agent
+    const pendingInvites: string[] = [];
+    for (const [meetingId, room] of this.activeMeetings) {
+      if (room.getParticipants().includes(agentId) && !room.getJoined().includes(agentId)) {
+        pendingInvites.push(meetingId);
+      }
+    }
+
     socket.send(
       JSON.stringify({
         type: "auth.ok",
         agentCard: agentCard ?? {},
-        pendingInvites: [],
+        pendingInvites,
       })
     );
 
     logger.info({ agentId }, "Agent authenticated");
   }
+
+  // --- Directory ---
 
   private async handleAgentStatus(
     agentId: string,
@@ -174,6 +236,165 @@ export class Router {
     });
   }
 
+  // --- Meeting handlers ---
+
+  private async handleMeetingCreate(
+    agentId: string,
+    msg: { title: string; projectId?: string; invitees: string[]; tokenBudget?: number; agenda?: string }
+  ): Promise<void> {
+    const room = new MeetingRoom({
+      title: msg.title,
+      initiatorId: agentId,
+      projectId: msg.projectId,
+      invitees: msg.invitees,
+      tokenBudget: msg.tokenBudget,
+      agenda: msg.agenda,
+      send: (targetId, message) => this.sessions.send(targetId, message),
+    });
+
+    await room.persist();
+    this.activeMeetings.set(room.id, room);
+
+    // Auto-join initiator
+    room.join(agentId);
+
+    // Update session
+    const session = this.sessions.get(agentId);
+    if (session) session.currentMeetingId = room.id;
+
+    // Send invites to other participants
+    room.sendInvites();
+
+    // Confirm creation to initiator
+    this.sessions.send(agentId, {
+      type: "meeting.created",
+      meetingId: room.id,
+      title: room.title,
+      participants: room.getParticipants(),
+    });
+
+    logger.info({ meetingId: room.id, initiator: agentId, participants: room.getParticipants() }, "Meeting created");
+  }
+
+  private handleMeetingJoin(agentId: string, meetingId: string): void {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = room.join(agentId);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Cannot join meeting"));
+      return;
+    }
+
+    // Update session
+    const session = this.sessions.get(agentId);
+    if (session) session.currentMeetingId = meetingId;
+
+    logger.info({ meetingId, agentId }, "Agent joined meeting");
+  }
+
+  private handleMeetingLeave(agentId: string, meetingId: string): void {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    room.leave(agentId);
+
+    const session = this.sessions.get(agentId);
+    if (session) session.currentMeetingId = null;
+
+    logger.info({ meetingId, agentId }, "Agent left meeting");
+  }
+
+  private async handleMeetingSpeak(agentId: string, meetingId: string, content: string): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.speak(agentId, content);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot speak now"));
+    }
+  }
+
+  private handleMeetingRelevance(agentId: string, meetingId: string, level: "must_speak" | "could_add" | "pass"): void {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    room.recordRelevance(agentId, level);
+  }
+
+  private async handleMeetingAdvance(agentId: string, meetingId: string): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.advance(agentId);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only initiator can advance"));
+    }
+  }
+
+  private async handleMeetingPropose(agentId: string, meetingId: string, proposal: string): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.propose(agentId, proposal);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot propose now"));
+    }
+  }
+
+  private async handleMeetingVote(
+    agentId: string,
+    meetingId: string,
+    proposalIndex: number,
+    vote: "approve" | "reject" | "abstain",
+    reason?: string
+  ): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.vote(agentId, proposalIndex, vote, reason);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot vote now"));
+    }
+  }
+
+  private async handleMeetingAssign(
+    agentId: string,
+    meetingId: string,
+    task: string,
+    assigneeId: string,
+    deadline?: string
+  ): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.assignTask(agentId, task, assigneeId, deadline);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot assign now"));
+    }
+  }
+
+  private async handleMeetingAcknowledge(agentId: string, meetingId: string, taskIndex: number): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.acknowledge(agentId, taskIndex);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot acknowledge now"));
+    }
+  }
+
+  // --- Helpers ---
+
+  private getMeetingOrError(agentId: string, meetingId: string): MeetingRoom | null {
+    const room = this.activeMeetings.get(meetingId);
+    if (!room) {
+      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND, `Meeting "${meetingId}" not found`));
+      return null;
+    }
+    return room;
+  }
+
   private getAgentIdForSocket(socket: WebSocket): string | undefined {
     for (const session of this.sessions.getAll()) {
       if (session.socket === socket) {
@@ -181,5 +402,11 @@ export class Router {
       }
     }
     return undefined;
+  }
+
+  // --- Expose for testing ---
+
+  getActiveMeetings(): Map<string, MeetingRoom> {
+    return this.activeMeetings;
   }
 }

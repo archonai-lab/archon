@@ -1,4 +1,16 @@
 import { z } from "zod";
+import {
+  MeetingCreateMessage,
+  MeetingJoinMessage,
+  MeetingLeaveMessage,
+  MeetingSpeakMessage,
+  MeetingRelevanceMessage,
+  MeetingAdvanceMessage,
+  MeetingProposeMessage,
+  MeetingVoteMessage,
+  MeetingAssignMessage,
+  MeetingAcknowledgeMessage,
+} from "../meeting/types.js";
 
 // --- Auth ---
 
@@ -61,6 +73,17 @@ export const InboundMessage = z.discriminatedUnion("type", [
   DirectoryGetMessage,
   AgentStatusMessage,
   PingMessage,
+  // Meeting messages
+  MeetingCreateMessage,
+  MeetingJoinMessage,
+  MeetingLeaveMessage,
+  MeetingSpeakMessage,
+  MeetingRelevanceMessage,
+  MeetingAdvanceMessage,
+  MeetingProposeMessage,
+  MeetingVoteMessage,
+  MeetingAssignMessage,
+  MeetingAcknowledgeMessage,
 ]);
 
 // --- Type exports ---
