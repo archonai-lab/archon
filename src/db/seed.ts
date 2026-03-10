@@ -62,6 +62,34 @@ async function seed(): Promise<void> {
     })
     .onConflictDoNothing();
 
+  // --- Demo agents for testing ---
+  await db
+    .insert(agents)
+    .values([
+      {
+        id: "alice",
+        displayName: "Alice",
+        workspacePath: "~/.archon/agents/alice",
+        status: "offline",
+      },
+      {
+        id: "bob",
+        displayName: "Bob",
+        workspacePath: "~/.archon/agents/bob",
+        status: "offline",
+      },
+    ])
+    .onConflictDoNothing();
+
+  // --- Demo agents → Engineering department ---
+  await db
+    .insert(agentDepartments)
+    .values([
+      { agentId: "alice", departmentId: "engineering", roleId: "lead_dev" },
+      { agentId: "bob", departmentId: "engineering", roleId: "lead_dev" },
+    ])
+    .onConflictDoNothing();
+
   // --- CEO admin permissions ---
   const existingPerms = await db.query.permissions.findFirst({
     where: (p, { eq }) => eq(p.agentId, "ceo"),
