@@ -47,6 +47,7 @@ describe("MeetingRoom", () => {
     const testMeetingIds = [
       "test-meeting-1", "test-meeting-budget", "present-test",
       "broadcast-test", "token-test", "decide-test", "complete-test",
+      "persist-jsonb-test",
     ];
     for (const id of testMeetingIds) {
       await db.delete(meetingMessages).where(eq(meetingMessages.meetingId, id));
@@ -339,6 +340,82 @@ describe("MeetingRoom", () => {
 
     const cancelled = messagesOfType("meeting.cancelled");
     expect(cancelled).toHaveLength(2); // sent to both participants
+  });
+
+  it("should persist decisions and action items as JSONB in Postgres", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "persist-jsonb-test",
+      title: "Persistence JSONB Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A, AGENT_B],
+      tokenBudget: 50_000,
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+    room.join(AGENT_B);
+
+    // PRESENT → DISCUSS → DECIDE
+    await room.advance(INITIATOR);
+    await room.advance(INITIATOR);
+    expect(room.getPhase()).toBe("decide");
+
+    // Add a proposal and approve it (majority)
+    await room.propose(AGENT_A, "Adopt TypeScript strict mode");
+    await room.vote(INITIATOR, 0, "approve");
+    await room.vote(AGENT_A, 0, "approve");
+    // Third vote completes voting → auto-advances to ASSIGN
+    await room.vote(AGENT_B, 0, "reject", "Too strict");
+
+    expect(room.getPhase()).toBe("assign");
+
+    // Assign an action item
+    await room.assignTask(INITIATOR, "Enable strict mode in tsconfig", AGENT_A, "2026-03-20");
+
+    // Complete the meeting by advancing past ASSIGN
+    await room.advance(INITIATOR);
+    expect(room.getStatus()).toBe("completed");
+
+    // Query Postgres to verify JSONB columns
+    const dbMeeting = await db.query.meetings.findFirst({
+      where: eq(meetings.id, "persist-jsonb-test"),
+    });
+    expect(dbMeeting).toBeDefined();
+    expect(dbMeeting!.status).toBe("completed");
+    expect(dbMeeting!.completedAt).toBeInstanceOf(Date);
+
+    // Verify decisions JSONB
+    const decisions = dbMeeting!.decisions as Array<{
+      proposal: string;
+      proposedBy: string;
+      votes: Array<{ agentId: string; vote: string; reason?: string }>;
+    }>;
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].proposal).toBe("Adopt TypeScript strict mode");
+    expect(decisions[0].proposedBy).toBe(AGENT_A);
+    expect(decisions[0].votes).toHaveLength(3);
+
+    const approves = decisions[0].votes.filter((v) => v.vote === "approve");
+    const rejects = decisions[0].votes.filter((v) => v.vote === "reject");
+    expect(approves).toHaveLength(2);
+    expect(rejects).toHaveLength(1);
+    expect(rejects[0].reason).toBe("Too strict");
+
+    // Verify actionItems JSONB
+    const items = dbMeeting!.actionItems as Array<{
+      task: string;
+      assigneeId: string;
+      assignedBy: string;
+      deadline?: string;
+      acknowledged: boolean;
+    }>;
+    expect(items).toHaveLength(1);
+    expect(items[0].task).toBe("Enable strict mode in tsconfig");
+    expect(items[0].assigneeId).toBe(AGENT_A);
+    expect(items[0].assignedBy).toBe(INITIATOR);
+    expect(items[0].deadline).toBe("2026-03-20");
   });
 
   it("should not allow speaking after meeting is completed", async () => {
