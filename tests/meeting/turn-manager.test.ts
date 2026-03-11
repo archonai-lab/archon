@@ -52,7 +52,7 @@ describe("TurnManager", () => {
     expect(queue).toEqual(["a"]);
   });
 
-  it("should timeout non-respondents after 10s", async () => {
+  it("should timeout non-respondents after 120s", async () => {
     vi.useFakeTimers();
     const tm = new TurnManager();
     const promise = tm.collect(["a", "b"]);
@@ -60,7 +60,7 @@ describe("TurnManager", () => {
     tm.addResponse("a", "must_speak");
     // b never responds
 
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(120_000);
     const queue = await promise;
     expect(queue).toEqual(["a"]); // b treated as PASS
     vi.useRealTimers();
