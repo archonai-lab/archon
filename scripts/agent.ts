@@ -2,37 +2,43 @@
  * Minimal agent runner — connects to the hub and participates in meetings using an LLM.
  *
  * Usage:
- *   npx tsx scripts/agent.ts --id <agentId> --model <model> [options]
+ *   npx tsx scripts/agent.ts --id <agentId> --provider <provider> [options]
  *
  * Options:
  *   --id         Agent ID (must exist in DB)
- *   --model      Model name (e.g. claude-sonnet-4-20250514, gemini-2.5-flash)
- *   --base-url   API base URL (default: https://openrouter.ai/api/v1)
- *   --api-key    API key (default: OPENROUTER_API_KEY env var)
+ *   --provider   LLM provider: cli-claude, cli-gemini, or openai (default: openai)
+ *   --model      Model name (for openai provider, or override CLI model)
+ *   --base-url   API base URL (openai provider only)
+ *   --api-key    API key (openai provider only)
  *   --hub        Hub WebSocket URL (default: ws://localhost:9500)
  *   --persona    Optional persona description for the agent
  *
  * Examples:
+ *   # Claude Code CLI (uses your existing auth):
+ *   npx tsx scripts/agent.ts --id alice --provider cli-claude
+ *
+ *   # Gemini CLI (uses your existing auth):
+ *   npx tsx scripts/agent.ts --id bob --provider cli-gemini
+ *
  *   # Via OpenRouter (any model):
- *   npx tsx scripts/agent.ts --id alice --model anthropic/claude-sonnet-4
- *   npx tsx scripts/agent.ts --id bob --model google/gemini-2.5-flash
+ *   npx tsx scripts/agent.ts --id alice --provider openai --model anthropic/claude-sonnet-4
  *
  *   # Via Ollama (free, local):
- *   npx tsx scripts/agent.ts --id alice --model llama3.1 --base-url http://localhost:11434/v1 --api-key unused
- *
- *   # Via direct Anthropic API:
- *   npx tsx scripts/agent.ts --id alice --model claude-sonnet-4-20250514 --base-url https://api.anthropic.com/v1 --api-key $ANTHROPIC_API_KEY
+ *   npx tsx scripts/agent.ts --id alice --provider openai --model llama3.1 --base-url http://localhost:11434/v1 --api-key unused
  */
 
 import WebSocket from "ws";
-import OpenAI from "openai";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
+import { execFile } from "child_process";
+
+type Provider = "cli-claude" | "cli-gemini" | "openai";
 
 // --- Parse CLI args ---
 function parseArgs(): {
   id: string;
+  provider: Provider;
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -48,9 +54,16 @@ function parseArgs(): {
     process.exit(1);
   };
 
+  const provider = get("--provider", "openai") as Provider;
+  if (!["cli-claude", "cli-gemini", "openai"].includes(provider)) {
+    console.error(`Invalid provider: ${provider}. Use: cli-claude, cli-gemini, openai`);
+    process.exit(1);
+  }
+
   return {
     id: get("--id"),
-    model: get("--model"),
+    provider,
+    model: get("--model", ""),
     baseUrl: get("--base-url", process.env.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1"),
     apiKey: get("--api-key", process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? ""),
     hub: get("--hub", "ws://localhost:9500"),
@@ -93,24 +106,82 @@ function loadIdentity(): string {
 
 const systemPrompt = loadIdentity();
 
-// --- LLM client ---
-const llm = new OpenAI({
-  baseURL: config.baseUrl,
-  apiKey: config.apiKey,
-});
+// --- LLM provider ---
+
+function runCli(command: string, args: string[], stdin?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Remove CLAUDECODE env var to allow nested Claude Code sessions
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
+
+    const proc = execFile(command, args, {
+      maxBuffer: 1024 * 1024,
+      timeout: 120_000,
+      env,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        reject(new Error(`${command} failed: ${err.message}\nSTDERR: ${stderr}\nSTDOUT: ${stdout}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+
+    if (stdin && proc.stdin) {
+      proc.stdin.write(stdin);
+      proc.stdin.end();
+    }
+  });
+}
+
+async function chatViaClaude(userMessage: string): Promise<string> {
+  const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+  // Use --print + stdin (not -p) to avoid hanging in nested sessions.
+  // Pattern from Claw-Empire: prompt via stdin, --print for non-interactive output.
+  const args = [
+    "--print",
+    "--no-session-persistence",
+    "--dangerously-skip-permissions",
+  ];
+  if (config.model) {
+    args.push("--model", config.model);
+  }
+  return runCli("claude", args, fullPrompt);
+}
+
+async function chatViaGemini(userMessage: string): Promise<string> {
+  const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+  const args = [
+    "-p", fullPrompt,
+  ];
+  if (config.model) {
+    args.push("-m", config.model);
+  }
+  return runCli("gemini", args);
+}
+
+async function chatViaOpenAI(userMessage: string): Promise<string> {
+  // Lazy-load OpenAI SDK only when needed
+  const { default: OpenAI } = await import("openai");
+  const llm = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey });
+  const resp = await llm.chat.completions.create({
+    model: config.model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+    max_tokens: 500,
+    temperature: 0.7,
+  });
+  return resp.choices[0]?.message?.content?.trim() ?? "(no response)";
+}
 
 async function chat(userMessage: string): Promise<string> {
   try {
-    const resp = await llm.chat.completions.create({
-      model: config.model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-      max_tokens: 500,
-      temperature: 0.7,
-    });
-    return resp.choices[0]?.message?.content?.trim() ?? "(no response)";
+    switch (config.provider) {
+      case "cli-claude": return await chatViaClaude(userMessage);
+      case "cli-gemini": return await chatViaGemini(userMessage);
+      case "openai":     return await chatViaOpenAI(userMessage);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`  [LLM error] ${msg}`);
@@ -159,7 +230,7 @@ ws.on("message", async (raw) => {
   switch (msg.type) {
     case "auth.ok":
       console.log(`[${config.id}] Authenticated ✓`);
-      console.log(`[${config.id}] Model: ${config.model}`);
+      console.log(`[${config.id}] Provider: ${config.provider}${config.model ? ` (${config.model})` : ""}`);
       console.log(`[${config.id}] Waiting for meeting invites...`);
       if (msg.pendingInvites?.length > 0) {
         for (const meetingId of msg.pendingInvites) {

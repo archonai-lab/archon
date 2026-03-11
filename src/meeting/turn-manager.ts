@@ -1,7 +1,7 @@
 import type { RelevanceLevel } from "./types.js";
 import { logger } from "../utils/logger.js";
 
-const RELEVANCE_TIMEOUT_MS = 10_000;
+const RELEVANCE_TIMEOUT_MS = 120_000; // 2 min — CLI tools (claude, gemini) can be slow
 
 interface RelevanceResponse {
   agentId: string;
