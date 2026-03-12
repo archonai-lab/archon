@@ -32,7 +32,7 @@ beforeAll(async () => {
     id: TEST_AGENT_ID,
     displayName: "Card Test Agent",
     workspacePath: "/nonexistent/path",
-    status: "offline",
+    status: "active",
     modelConfig: { provider: "acpx", backend: "claude-code" },
   }).onConflictDoNothing();
 
@@ -88,14 +88,20 @@ describe("Agent Card", () => {
   it("should reflect live status on cached card", async () => {
     await generateAgentCard(TEST_AGENT_ID);
 
-    // Update status directly
+    // Update status to deactivated
     await db
       .update(agents)
-      .set({ status: "busy" })
+      .set({ status: "deactivated" })
       .where(eq(agents.id, TEST_AGENT_ID));
 
     const card = await getAgentCard(TEST_AGENT_ID);
-    expect(card!.status).toBe("busy");
+    expect(card!.status).toBe("deactivated");
+
+    // Reset for other tests
+    await db
+      .update(agents)
+      .set({ status: "active" })
+      .where(eq(agents.id, TEST_AGENT_ID));
   });
 
   it("should generate card for CEO with workspace files", async () => {

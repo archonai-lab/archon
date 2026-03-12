@@ -47,7 +47,6 @@ async function seed(): Promise<void> {
       id: "ceo",
       displayName: "CEO",
       workspacePath: "~/.archon/agents/ceo",
-      status: "offline",
       modelConfig: { provider: "acpx", backend: "claude-code" },
     })
     .onConflictDoNothing();
@@ -70,13 +69,11 @@ async function seed(): Promise<void> {
         id: "alice",
         displayName: "Alice",
         workspacePath: "~/.archon/agents/alice",
-        status: "offline",
       },
       {
         id: "bob",
         displayName: "Bob",
         workspacePath: "~/.archon/agents/bob",
-        status: "offline",
       },
     ])
     .onConflictDoNothing();

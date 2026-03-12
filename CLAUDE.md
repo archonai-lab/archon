@@ -32,6 +32,7 @@ npx vitest run tests/hub/server.test.ts  # Run single test file
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DATABASE_URL` | `postgresql://archon:archon@localhost:5432/archon` | Postgres connection |
+| `WS_HOST` | `127.0.0.1` | WebSocket bind address |
 | `WS_PORT` | `9500` | WebSocket server port |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `NODE_ENV` | — | Set `production` for JSON-only logging |

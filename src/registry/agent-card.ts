@@ -46,8 +46,8 @@ export interface AgentCard {
     description: string;
   }>;
 
-  status: "online" | "offline" | "busy";
-  currentMeeting: string | null;
+  status: "active" | "deactivated";
+  activity: string; // "idle", "connected", "in_meeting:<title>"
 
   model: {
     provider: string;
@@ -211,8 +211,8 @@ export async function generateAgentCard(
 
     skills,
 
-    status: agent.status as "online" | "offline" | "busy",
-    currentMeeting: null,
+    status: agent.status as "active" | "deactivated",
+    activity: "idle",
 
     model: modelConfig
       ? {
@@ -249,9 +249,10 @@ export async function getAgentCard(
 
   // Return cached card if available
   if (agent.agentCard) {
-    // Update live status fields
     const card = agent.agentCard as AgentCard;
-    card.status = agent.status as "online" | "offline" | "busy";
+    card.status = agent.status as "active" | "deactivated";
+    // Activity is set dynamically by the router when building directory results
+    card.activity = "idle";
     return card;
   }
 

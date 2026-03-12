@@ -53,13 +53,13 @@ beforeAll(async () => {
         id: "client-test-a",
         displayName: "Client Test A",
         workspacePath: "~/.archon/agents/client-test-a",
-        status: "offline",
+        status: "active",
       },
       {
         id: "client-test-b",
         displayName: "Client Test B",
         workspacePath: "~/.archon/agents/client-test-b",
-        status: "offline",
+        status: "active",
       },
     ])
     .onConflictDoNothing();

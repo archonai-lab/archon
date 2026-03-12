@@ -9,12 +9,25 @@ import { discoverAgents } from "../registry/discovery.js";
 import { getAgentCard } from "../registry/agent-card.js";
 import { MeetingRoom } from "../meeting/meeting-room.js";
 import { loadMethodology, getDefaultMethodology } from "../meeting/methodology-loader.js";
+import { createAgentFull, updateAgentFull, deleteAgentFull, reactivateAgentFull } from "../registry/agent-crud.js";
+import {
+  listDepartments, createDepartmentFull, updateDepartmentFull, deleteDepartmentFull,
+  listRoles, createRoleFull, updateRoleFull, deleteRoleFull,
+} from "../registry/department-crud.js";
+import { listMeetings, getMeetingTranscript } from "../meeting/meeting-queries.js";
+import { AgentSpawner } from "./agent-spawner.js";
 import { logger } from "../utils/logger.js";
 
 export class Router {
   private activeMeetings = new Map<string, MeetingRoom>();
+  private spawner: AgentSpawner;
 
-  constructor(private sessions: SessionManager) {}
+  constructor(private sessions: SessionManager) {
+    const wsPort = parseInt(process.env.WS_PORT ?? "9500", 10);
+    this.spawner = new AgentSpawner(`ws://127.0.0.1:${wsPort}`, {
+      onProcessExit: (agentId, code, signal) => this.handleAgentProcessExit(agentId, code, signal),
+    });
+  }
 
   async handleRaw(socket: WebSocket, raw: string): Promise<void> {
     let data: unknown;
@@ -55,7 +68,7 @@ export class Router {
         break;
 
       case "agent.status":
-        await this.handleAgentStatus(agentId, message.status);
+        // Deprecated — status is now derived from activity
         break;
 
       case "directory.list":
@@ -64,6 +77,57 @@ export class Router {
 
       case "directory.get":
         await this.handleDirectoryGet(agentId, message.agentId);
+        break;
+
+      // --- Agent CRUD ---
+      case "agent.create":
+        await this.handleAgentCreate(agentId, message);
+        break;
+
+      case "agent.update":
+        await this.handleAgentUpdate(agentId, message);
+        break;
+
+      case "agent.delete":
+        await this.handleAgentDelete(agentId, message.agentId);
+        break;
+
+      case "agent.reactivate":
+        await this.handleAgentReactivate(agentId, message.agentId);
+        break;
+
+      // --- Department CRUD ---
+      case "department.list":
+        await this.handleDepartmentList(agentId);
+        break;
+
+      case "department.create":
+        await this.handleDepartmentCreate(agentId, message);
+        break;
+
+      case "department.update":
+        await this.handleDepartmentUpdate(agentId, message);
+        break;
+
+      case "department.delete":
+        await this.handleDepartmentDelete(agentId, message.departmentId);
+        break;
+
+      // --- Role CRUD ---
+      case "role.list":
+        await this.handleRoleList(agentId, message.departmentId);
+        break;
+
+      case "role.create":
+        await this.handleRoleCreate(agentId, message);
+        break;
+
+      case "role.update":
+        await this.handleRoleUpdate(agentId, message);
+        break;
+
+      case "role.delete":
+        await this.handleRoleDelete(agentId, message.roleId);
         break;
 
       // --- Meeting messages ---
@@ -119,6 +183,19 @@ export class Router {
         await this.handleMeetingAcknowledge(agentId, message.meetingId, message.taskIndex);
         break;
 
+      case "meeting.approve":
+        await this.handleMeetingApprove(agentId, message.meetingId);
+        break;
+
+      // --- Meeting history ---
+      case "meeting.history":
+        await this.handleMeetingHistory(agentId, message);
+        break;
+
+      case "meeting.transcript":
+        await this.handleMeetingTranscript(agentId, message.meetingId);
+        break;
+
       default:
         this.sessions.send(
           agentId,
@@ -167,11 +244,6 @@ export class Router {
 
     this.sessions.add(agentId, socket);
 
-    await db
-      .update(agents)
-      .set({ status: "online", updatedAt: new Date() })
-      .where(eq(agents.id, agentId));
-
     const agentCard = await getAgentCard(agentId);
 
     // Find pending invites for this agent
@@ -195,23 +267,30 @@ export class Router {
 
   // --- Directory ---
 
-  private async handleAgentStatus(
-    agentId: string,
-    status: "online" | "offline" | "busy"
-  ): Promise<void> {
-    await db
-      .update(agents)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(agents.id, agentId));
-
-    logger.info({ agentId, status }, "Agent status updated");
-  }
-
   private async handleDirectoryList(
     agentId: string,
     filter?: { departmentId?: string }
   ): Promise<void> {
     const cards = await discoverAgents(agentId, filter);
+
+    // Enrich cards with live activity derived from sessions + meetings
+    for (const card of cards) {
+      const c = card as { id: string; activity?: string };
+      if (!this.sessions.isOnline(c.id)) {
+        // Check if agent is spawning (process started but not yet connected)
+        c.activity = this.spawner.isSpawned(c.id) ? "spawning" : "idle";
+        continue;
+      }
+      // Check if agent is in an active meeting
+      const session = this.sessions.get(c.id);
+      if (session?.currentMeetingId) {
+        const room = this.activeMeetings.get(session.currentMeetingId);
+        c.activity = room ? `in_meeting:${room.title}` : "connected";
+      } else {
+        c.activity = "connected";
+      }
+    }
+
     this.sessions.send(agentId, {
       type: "directory.result",
       agents: cards,
@@ -241,7 +320,7 @@ export class Router {
 
   private async handleMeetingCreate(
     agentId: string,
-    msg: { title: string; projectId?: string; invitees: string[]; tokenBudget?: number; agenda?: string; methodology?: string }
+    msg: { title: string; projectId?: string; invitees: string[]; tokenBudget?: number; agenda?: string; methodology?: string; approvalRequired?: boolean }
   ): Promise<void> {
     let methodology;
     try {
@@ -265,6 +344,8 @@ export class Router {
       agenda: msg.agenda,
       send: (targetId, message) => this.sessions.send(targetId, message),
       methodology,
+      approvalRequired: msg.approvalRequired,
+      onEnd: (meetingId) => this.handleMeetingEnd(meetingId),
     });
 
     await room.persist();
@@ -289,6 +370,30 @@ export class Router {
     });
 
     logger.info({ meetingId: room.id, initiator: agentId, participants: room.getParticipants() }, "Meeting created");
+
+    // Auto-spawn agent processes for invitees that aren't already connected
+    const toSpawn = room.getParticipants().filter(
+      (id) => id !== agentId && !this.sessions.isOnline(id)
+    );
+    if (toSpawn.length > 0) {
+      const result = await this.spawner.spawnForMeeting(toSpawn, room.id);
+      if (result.spawned.length > 0) {
+        logger.info({ meetingId: room.id, spawned: result.spawned }, "Auto-spawned agents for meeting");
+        this.sessions.send(agentId, {
+          type: "agents.spawned",
+          meetingId: room.id,
+          agentIds: result.spawned,
+        });
+      }
+      if (result.failed.length > 0) {
+        logger.warn({ meetingId: room.id, failed: result.failed }, "Some agents failed to spawn");
+        this.sessions.send(agentId, {
+          type: "agents.spawn_failed",
+          meetingId: room.id,
+          failures: result.failed,
+        });
+      }
+    }
   }
 
   private handleMeetingJoin(agentId: string, meetingId: string): void {
@@ -397,6 +502,288 @@ export class Router {
     if (!ok) {
       this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot acknowledge now"));
     }
+  }
+
+  private async handleMeetingApprove(agentId: string, meetingId: string): Promise<void> {
+    const room = this.getMeetingOrError(agentId, meetingId);
+    if (!room) return;
+
+    const ok = await room.approve(agentId);
+    if (!ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Cannot approve: not initiator or not awaiting approval"));
+    }
+  }
+
+  // --- Agent CRUD handlers ---
+
+  private async handleAgentCreate(
+    agentId: string,
+    msg: { name: string; displayName: string; departments?: Array<{ departmentId: string; roleId: string }>; role?: string; modelConfig?: Record<string, unknown> }
+  ): Promise<void> {
+    const result = await createAgentFull(agentId, {
+      name: msg.name,
+      displayName: msg.displayName,
+      departments: msg.departments,
+      role: msg.role,
+      modelConfig: msg.modelConfig,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "agent.created",
+      agentId: result.agent.id,
+      displayName: result.agent.displayName,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleAgentUpdate(
+    agentId: string,
+    msg: { agentId: string; displayName?: string; departments?: Array<{ departmentId: string; roleId: string }>; modelConfig?: Record<string, unknown> }
+  ): Promise<void> {
+    const result = await updateAgentFull(agentId, msg.agentId, {
+      displayName: msg.displayName,
+      departments: msg.departments,
+      modelConfig: msg.modelConfig,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "agent.updated",
+      agentId: msg.agentId,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleAgentDelete(requesterId: string, targetAgentId: string): Promise<void> {
+    const result = await deleteAgentFull(requesterId, targetAgentId);
+
+    if (!result.ok) {
+      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    // Remove from active meetings
+    for (const [, room] of this.activeMeetings) {
+      if (room.getParticipants().includes(targetAgentId)) {
+        room.leave(targetAgentId);
+      }
+    }
+
+    this.sessions.send(requesterId, {
+      type: "agent.deleted",
+      agentId: targetAgentId,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleAgentReactivate(requesterId: string, targetAgentId: string): Promise<void> {
+    const result = await reactivateAgentFull(requesterId, targetAgentId);
+
+    if (!result.ok) {
+      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(requesterId, {
+      type: "agent.updated",
+      agentId: targetAgentId,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  // --- Department CRUD handlers ---
+
+  private async handleDepartmentList(agentId: string): Promise<void> {
+    const depts = await listDepartments();
+    this.sessions.send(agentId, {
+      type: "department.result",
+      departments: depts,
+    });
+  }
+
+  private async handleDepartmentCreate(
+    agentId: string,
+    msg: { name: string; description?: string }
+  ): Promise<void> {
+    const result = await createDepartmentFull(agentId, msg.name, msg.description);
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "department.created",
+      departmentId: result.department.id,
+      name: result.department.name,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleDepartmentUpdate(
+    agentId: string,
+    msg: { departmentId: string; name?: string; description?: string }
+  ): Promise<void> {
+    const result = await updateDepartmentFull(agentId, msg.departmentId, {
+      name: msg.name,
+      description: msg.description,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, { type: "department.updated", departmentId: msg.departmentId });
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleDepartmentDelete(agentId: string, departmentId: string): Promise<void> {
+    const result = await deleteDepartmentFull(agentId, departmentId);
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, { type: "department.deleted", departmentId });
+    this.broadcastDirectoryUpdated();
+  }
+
+  // --- Role CRUD handlers ---
+
+  private async handleRoleList(agentId: string, departmentId?: string): Promise<void> {
+    const roleList = await listRoles(departmentId);
+    this.sessions.send(agentId, {
+      type: "role.result",
+      roles: roleList,
+    });
+  }
+
+  private async handleRoleCreate(
+    agentId: string,
+    msg: { departmentId: string; name: string; permissions?: string[] }
+  ): Promise<void> {
+    const result = await createRoleFull(agentId, msg.departmentId, msg.name, msg.permissions);
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "role.created",
+      roleId: result.role.id,
+      name: result.role.name,
+      departmentId: msg.departmentId,
+    });
+  }
+
+  private async handleRoleUpdate(
+    agentId: string,
+    msg: { roleId: string; name?: string; permissions?: string[] }
+  ): Promise<void> {
+    const result = await updateRoleFull(agentId, msg.roleId, {
+      name: msg.name,
+      permissions: msg.permissions,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, { type: "role.updated", roleId: msg.roleId });
+  }
+
+  private async handleRoleDelete(agentId: string, roleId: string): Promise<void> {
+    const result = await deleteRoleFull(agentId, roleId);
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, { type: "role.deleted", roleId });
+  }
+
+  // --- Meeting history handlers ---
+
+  private async handleMeetingHistory(
+    agentId: string,
+    msg: { status?: "active" | "completed" | "cancelled"; cursor?: string; limit?: number }
+  ): Promise<void> {
+    const results = await listMeetings({
+      status: msg.status,
+      cursor: msg.cursor,
+      limit: msg.limit,
+    });
+
+    this.sessions.send(agentId, {
+      type: "meeting.history.result",
+      meetings: results,
+    });
+  }
+
+  private async handleMeetingTranscript(agentId: string, meetingId: string): Promise<void> {
+    const result = await getMeetingTranscript(meetingId);
+    if (!result) {
+      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND, `Meeting "${meetingId}" not found`));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "meeting.transcript.result",
+      ...result,
+    });
+  }
+
+  // --- Agent process lifecycle ---
+
+  private handleAgentProcessExit(agentId: string, code: number | null, signal: string | null): void {
+    // Normal exit (code 0 or SIGINT from despawn) — don't notify
+    if (code === 0 || signal === "SIGINT") return;
+
+    // Unexpected crash — notify all connected clients
+    logger.warn({ agentId, code, signal }, "Agent process crashed");
+    this.sessions.broadcast({
+      type: "agent.process_error",
+      agentId,
+      reason: code !== null ? `Process exited with code ${code}` : `Process killed by ${signal}`,
+    });
+    this.broadcastDirectoryUpdated();
+  }
+
+  // --- Meeting lifecycle ---
+
+  private handleMeetingEnd(meetingId: string): void {
+    const despawned = this.spawner.despawnForMeeting(meetingId);
+    if (despawned.length > 0) {
+      logger.info({ meetingId, despawned }, "Despawned agents after meeting ended");
+    }
+    this.activeMeetings.delete(meetingId);
+    this.broadcastDirectoryUpdated();
+  }
+
+  /** Kill all spawned agent processes (called during shutdown). */
+  killAllAgents(): void {
+    this.spawner.killAll();
+  }
+
+  // --- Broadcast helpers ---
+
+  private broadcastDirectoryUpdated(): void {
+    this.sessions.broadcast({ type: "directory.updated" });
   }
 
   // --- Helpers ---

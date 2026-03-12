@@ -3,6 +3,7 @@ import { HubServer } from "./hub/server.js";
 import { logger } from "./utils/logger.js";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "9500", 10);
+const WS_HOST = process.env.WS_HOST ?? "127.0.0.1";
 
 async function main(): Promise<void> {
   logger.info("Archon — Agent Company Platform");
@@ -13,7 +14,7 @@ async function main(): Promise<void> {
 
   // 2. Start WebSocket hub
   const hub = new HubServer();
-  await hub.start(WS_PORT);
+  await hub.start(WS_PORT, WS_HOST);
 
   logger.info("Archon is ready");
 

@@ -36,7 +36,7 @@ describe("MeetingRoom", () => {
           id,
           displayName: id,
           workspacePath: `~/.archon/agents/${id}`,
-          status: "online",
+          status: "active",
         })
         .onConflictDoNothing();
     }

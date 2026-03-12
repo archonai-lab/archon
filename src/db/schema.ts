@@ -41,9 +41,9 @@ export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   displayName: text("display_name").notNull(),
   workspacePath: text("workspace_path").notNull(),
-  status: text("status", { enum: ["online", "offline", "busy"] })
+  status: text("status", { enum: ["active", "deactivated"] })
     .notNull()
-    .default("offline"),
+    .default("active"),
   agentCard: jsonb("agent_card"),
   modelConfig: jsonb("model_config"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

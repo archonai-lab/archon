@@ -36,6 +36,29 @@ export async function hasPermission(
     if (wildcard) return true;
   }
 
+  // Check if agent has "admin" action on the resource (admin implies any action)
+  if (action !== "admin") {
+    const adminExact = await db.query.permissions.findFirst({
+      where: and(
+        eq(permissions.agentId, agentId),
+        eq(permissions.resource, resource),
+        eq(permissions.action, "admin")
+      ),
+    });
+    if (adminExact) return true;
+
+    if (resourceType) {
+      const adminWildcard = await db.query.permissions.findFirst({
+        where: and(
+          eq(permissions.agentId, agentId),
+          eq(permissions.resource, `${resourceType}:*`),
+          eq(permissions.action, "admin")
+        ),
+      });
+      if (adminWildcard) return true;
+    }
+  }
+
   return false;
 }
 

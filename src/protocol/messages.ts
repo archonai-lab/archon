@@ -10,6 +10,7 @@ import {
   MeetingVoteMessage,
   MeetingAssignMessage,
   MeetingAcknowledgeMessage,
+  MeetingApproveMessage,
 } from "../meeting/types.js";
 
 // --- Auth ---
@@ -60,6 +61,105 @@ export const AgentStatusMessage = z.object({
   status: z.enum(["online", "offline", "busy"]),
 });
 
+// --- Agent CRUD ---
+
+export const AgentCreateMessage = z.object({
+  type: z.literal("agent.create"),
+  name: z.string().min(1).max(64).regex(/^[a-z0-9_-]+$/, "Must be lowercase alphanumeric with hyphens/underscores"),
+  displayName: z.string().min(1).max(128),
+  departments: z.array(z.object({
+    departmentId: z.string().min(1),
+    roleId: z.string().min(1),
+  })).optional(),
+  role: z.string().optional(),
+  modelConfig: z.record(z.unknown()).optional(),
+});
+
+export const AgentUpdateMessage = z.object({
+  type: z.literal("agent.update"),
+  agentId: z.string().min(1),
+  displayName: z.string().min(1).max(128).optional(),
+  departments: z.array(z.object({
+    departmentId: z.string().min(1),
+    roleId: z.string().min(1),
+  })).optional(),
+  modelConfig: z.record(z.unknown()).optional(),
+});
+
+export const AgentDeleteMessage = z.object({
+  type: z.literal("agent.delete"),
+  agentId: z.string().min(1),
+});
+
+export const AgentReactivateMessage = z.object({
+  type: z.literal("agent.reactivate"),
+  agentId: z.string().min(1),
+});
+
+// --- Department CRUD ---
+
+export const DepartmentListMessage = z.object({
+  type: z.literal("department.list"),
+});
+
+export const DepartmentCreateMessage = z.object({
+  type: z.literal("department.create"),
+  name: z.string().min(1).max(128),
+  description: z.string().optional(),
+});
+
+export const DepartmentUpdateMessage = z.object({
+  type: z.literal("department.update"),
+  departmentId: z.string().min(1),
+  name: z.string().min(1).max(128).optional(),
+  description: z.string().optional(),
+});
+
+export const DepartmentDeleteMessage = z.object({
+  type: z.literal("department.delete"),
+  departmentId: z.string().min(1),
+});
+
+// --- Role CRUD ---
+
+export const RoleListMessage = z.object({
+  type: z.literal("role.list"),
+  departmentId: z.string().min(1).optional(),
+});
+
+export const RoleCreateMessage = z.object({
+  type: z.literal("role.create"),
+  departmentId: z.string().min(1),
+  name: z.string().min(1).max(128),
+  permissions: z.array(z.string()).optional(),
+});
+
+export const RoleUpdateMessage = z.object({
+  type: z.literal("role.update"),
+  roleId: z.string().min(1),
+  name: z.string().min(1).max(128).optional(),
+  permissions: z.array(z.string()).optional(),
+});
+
+export const RoleDeleteMessage = z.object({
+  type: z.literal("role.delete"),
+  roleId: z.string().min(1),
+});
+
+// --- Meeting History ---
+
+export const MeetingHistoryMessage = z.object({
+  type: z.literal("meeting.history"),
+  status: z.enum(["active", "completed", "cancelled"]).optional(),
+  cursor: z.string().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
+export const MeetingTranscriptMessage = z.object({
+  type: z.literal("meeting.transcript"),
+  meetingId: z.string().min(1),
+});
+
 // --- Ping/Pong ---
 
 export const PingMessage = z.object({ type: z.literal("ping") });
@@ -73,6 +173,21 @@ export const InboundMessage = z.discriminatedUnion("type", [
   DirectoryGetMessage,
   AgentStatusMessage,
   PingMessage,
+  // Agent CRUD
+  AgentCreateMessage,
+  AgentUpdateMessage,
+  AgentDeleteMessage,
+  AgentReactivateMessage,
+  // Department CRUD
+  DepartmentListMessage,
+  DepartmentCreateMessage,
+  DepartmentUpdateMessage,
+  DepartmentDeleteMessage,
+  // Role CRUD
+  RoleListMessage,
+  RoleCreateMessage,
+  RoleUpdateMessage,
+  RoleDeleteMessage,
   // Meeting messages
   MeetingCreateMessage,
   MeetingJoinMessage,
@@ -84,6 +199,10 @@ export const InboundMessage = z.discriminatedUnion("type", [
   MeetingVoteMessage,
   MeetingAssignMessage,
   MeetingAcknowledgeMessage,
+  MeetingApproveMessage,
+  // Meeting history
+  MeetingHistoryMessage,
+  MeetingTranscriptMessage,
 ]);
 
 // --- Type exports ---
@@ -95,4 +214,18 @@ export type DirectoryListMessage = z.infer<typeof DirectoryListMessage>;
 export type DirectoryGetMessage = z.infer<typeof DirectoryGetMessage>;
 export type DirectoryResultMessage = z.infer<typeof DirectoryResultMessage>;
 export type AgentStatusMessage = z.infer<typeof AgentStatusMessage>;
+export type AgentCreateMessage = z.infer<typeof AgentCreateMessage>;
+export type AgentUpdateMessage = z.infer<typeof AgentUpdateMessage>;
+export type AgentDeleteMessage = z.infer<typeof AgentDeleteMessage>;
+export type AgentReactivateMessage = z.infer<typeof AgentReactivateMessage>;
+export type DepartmentListMessage = z.infer<typeof DepartmentListMessage>;
+export type DepartmentCreateMessage = z.infer<typeof DepartmentCreateMessage>;
+export type DepartmentUpdateMessage = z.infer<typeof DepartmentUpdateMessage>;
+export type DepartmentDeleteMessage = z.infer<typeof DepartmentDeleteMessage>;
+export type RoleListMessage = z.infer<typeof RoleListMessage>;
+export type RoleCreateMessage = z.infer<typeof RoleCreateMessage>;
+export type RoleUpdateMessage = z.infer<typeof RoleUpdateMessage>;
+export type RoleDeleteMessage = z.infer<typeof RoleDeleteMessage>;
+export type MeetingHistoryMessage = z.infer<typeof MeetingHistoryMessage>;
+export type MeetingTranscriptMessage = z.infer<typeof MeetingTranscriptMessage>;
 export type InboundMessage = z.infer<typeof InboundMessage>;

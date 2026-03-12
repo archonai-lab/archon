@@ -41,7 +41,7 @@ beforeAll(async () => {
       id: "test-agent",
       displayName: "Test Agent",
       workspacePath: "~/.archon/agents/test-agent",
-      status: "offline",
+      status: "active",
     })
     .onConflictDoNothing();
 
@@ -149,7 +149,7 @@ describe("HubServer", () => {
       expect(reply).toEqual({ type: "pong" });
     });
 
-    it("should handle agent.status", async () => {
+    it("should handle agent.status as no-op (deprecated)", async () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
@@ -157,16 +157,16 @@ describe("HubServer", () => {
         token: "test-agent",
       });
 
-      // Send status update — no response expected, just verify no error
+      // Send status update — deprecated, should not error
       ws.send(JSON.stringify({ type: "agent.status", status: "busy" }));
 
-      // Verify status was updated in DB
-      // Give it a moment to process
+      // Give it a moment to process — should not crash
       await new Promise((r) => setTimeout(r, 100));
       const agent = await db.query.agents.findFirst({
         where: eq(agents.id, "test-agent"),
       });
-      expect(agent?.status).toBe("busy");
+      // Status stays "active" (lifecycle field, not presence)
+      expect(agent?.status).toBe("active");
     });
 
     it("should reject invalid JSON", async () => {
@@ -201,7 +201,7 @@ describe("HubServer", () => {
   });
 
   describe("session management", () => {
-    it("should update agent status to offline on disconnect", async () => {
+    it("should clean up session on disconnect without changing DB status", async () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
@@ -209,21 +209,15 @@ describe("HubServer", () => {
         token: "test-agent",
       });
 
-      // Verify online
-      let agent = await db.query.agents.findFirst({
-        where: eq(agents.id, "test-agent"),
-      });
-      expect(agent?.status).toBe("online");
-
       // Disconnect
       ws.close();
       await new Promise((r) => setTimeout(r, 200));
 
-      // Verify offline
-      agent = await db.query.agents.findFirst({
+      // Status in DB stays "active" (lifecycle, not presence)
+      const agent = await db.query.agents.findFirst({
         where: eq(agents.id, "test-agent"),
       });
-      expect(agent?.status).toBe("offline");
+      expect(agent?.status).toBe("active");
     });
 
     it("should handle reconnect by closing old session", async () => {

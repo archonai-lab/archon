@@ -1,9 +1,6 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { eq } from "drizzle-orm";
 import { SessionManager } from "./session.js";
 import { Router } from "./router.js";
-import { db } from "../db/connection.js";
-import { agents } from "../db/schema.js";
 import { logger } from "../utils/logger.js";
 
 export class HubServer {
@@ -11,8 +8,8 @@ export class HubServer {
   private sessions = new SessionManager();
   private router = new Router(this.sessions);
 
-  async start(port: number): Promise<void> {
-    this.wss = new WebSocketServer({ port });
+  async start(port: number, host?: string): Promise<void> {
+    this.wss = new WebSocketServer({ port, host });
 
     this.wss.on("connection", (socket: WebSocket) => {
       logger.debug("New WebSocket connection");
@@ -32,23 +29,12 @@ export class HubServer {
         }
       });
 
-      socket.on("close", async () => {
+      socket.on("close", () => {
         // Find and clean up the session for this socket
         for (const session of this.sessions.getAll()) {
           if (session.socket === socket) {
             const { agentId } = session;
             this.sessions.remove(agentId);
-
-            // Update status in DB
-            try {
-              await db
-                .update(agents)
-                .set({ status: "offline", updatedAt: new Date() })
-                .where(eq(agents.id, agentId));
-            } catch (error) {
-              logger.error({ error, agentId }, "Failed to update agent status on disconnect");
-            }
-
             logger.info({ agentId }, "Agent disconnected");
             break;
           }
@@ -60,11 +46,14 @@ export class HubServer {
       });
     });
 
-    logger.info({ port }, "Hub WebSocket server started");
+    logger.info({ port, host: host ?? "127.0.0.1" }, "Hub WebSocket server started");
   }
 
   async stop(): Promise<void> {
     if (!this.wss) return;
+
+    // Kill all spawned agent processes
+    this.router.killAllAgents();
 
     // Close all connections
     for (const session of this.sessions.getAll()) {
