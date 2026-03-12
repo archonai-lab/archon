@@ -27,11 +27,11 @@
  *   npx tsx scripts/agent.ts --id alice --provider openai --model llama3.1 --base-url http://localhost:11434/v1 --api-key unused
  */
 
-import WebSocket from "ws";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { homedir } from "os";
 import { execFile } from "child_process";
+import { AgentClient } from "../src/agent/client.js";
 
 type Provider = "cli-claude" | "cli-gemini" | "openai";
 
@@ -206,66 +206,73 @@ function historyContext(): string {
     .join("\n");
 }
 
-// --- WebSocket connection ---
-const ws = new WebSocket(config.hub);
-
-ws.on("open", () => {
-  console.log(`[${config.id}] Connecting to hub...`);
-  ws.send(JSON.stringify({ type: "auth", agentId: config.id, token: config.id }));
+// --- AgentClient setup ---
+const client = new AgentClient({
+  agentId: config.id,
+  hubUrl: config.hub,
 });
 
-ws.on("close", (code, reason) => {
-  console.log(`[${config.id}] Disconnected (${code}: ${reason.toString()})`);
-  process.exit(0);
+client.on("connected", () => {
+  console.log(`[${config.id}] Authenticated ✓`);
+  console.log(`[${config.id}] Provider: ${config.provider}${config.model ? ` (${config.model})` : ""}`);
+  console.log(`[${config.id}] Waiting for meeting invites...`);
 });
 
-ws.on("error", (err) => {
+client.on("auth.ok", (msg) => {
+  if (msg.pendingInvites?.length > 0) {
+    for (const meetingId of msg.pendingInvites) {
+      console.log(`[${config.id}] Auto-joining pending meeting: ${meetingId}`);
+      client.joinMeeting(meetingId);
+      currentMeetingId = meetingId;
+    }
+  }
+});
+
+client.on("hub.error", (msg) => {
+  if (msg.code === "AUTH_FAILED") {
+    console.error(`[${config.id}] Auth failed: ${msg.message}`);
+    process.exit(1);
+  }
+  console.error(`[${config.id}] Error: ${msg.message}`);
+});
+
+client.on("error", (err) => {
   console.error(`[${config.id}] WebSocket error: ${err.message}`);
   process.exit(1);
 });
 
-ws.on("message", async (raw) => {
-  const msg = JSON.parse(raw.toString());
+client.on("disconnected", (code, reason) => {
+  console.log(`[${config.id}] Disconnected (${code}: ${reason})`);
+  // If reconnect is enabled (default), the client will auto-reconnect.
+  // Otherwise, exit.
+  if (!client.connected) {
+    process.exit(0);
+  }
+});
 
-  switch (msg.type) {
-    case "auth.ok":
-      console.log(`[${config.id}] Authenticated ✓`);
-      console.log(`[${config.id}] Provider: ${config.provider}${config.model ? ` (${config.model})` : ""}`);
-      console.log(`[${config.id}] Waiting for meeting invites...`);
-      if (msg.pendingInvites?.length > 0) {
-        for (const meetingId of msg.pendingInvites) {
-          console.log(`[${config.id}] Auto-joining pending meeting: ${meetingId}`);
-          ws.send(JSON.stringify({ type: "meeting.join", meetingId }));
-          currentMeetingId = meetingId;
-        }
-      }
-      break;
+// --- Meeting event handlers ---
 
-    case "auth.error":
-      console.error(`[${config.id}] Auth failed: ${msg.message}`);
-      process.exit(1);
+client.on("meeting.invite", (msg) => {
+  console.log(`[${config.id}] Invited to "${msg.title}" by ${msg.initiator}`);
+  if (msg.agenda) console.log(`[${config.id}] Agenda: ${msg.agenda}`);
+  client.joinMeeting(msg.meetingId);
+  currentMeetingId = msg.meetingId;
+});
 
-    case "meeting.invite":
-      console.log(`[${config.id}] Invited to "${msg.title}" by ${msg.initiator}`);
-      if (msg.agenda) console.log(`[${config.id}] Agenda: ${msg.agenda}`);
-      ws.send(JSON.stringify({ type: "meeting.join", meetingId: msg.meetingId }));
-      currentMeetingId = msg.meetingId;
-      break;
+client.on("meeting.phase_change", (msg) => {
+  console.log(`[${config.id}] Phase → ${msg.phase.toUpperCase()} (budget: ${msg.budgetRemaining})`);
+});
 
-    case "meeting.phase_change":
-      console.log(`[${config.id}] Phase → ${msg.phase.toUpperCase()} (budget: ${msg.budgetRemaining})`);
-      break;
+client.on("meeting.message", (msg) => {
+  addToHistory(msg.agentId, msg.content);
+  if (msg.agentId !== config.id) {
+    console.log(`[${config.id}] ${msg.agentId} says: "${msg.content.slice(0, 120)}${msg.content.length > 120 ? "..." : ""}"`);
+  }
+});
 
-    case "meeting.message":
-      addToHistory(msg.agentId, msg.content);
-      if (msg.agentId !== config.id) {
-        console.log(`[${config.id}] ${msg.agentId} says: "${msg.content.slice(0, 120)}${msg.content.length > 120 ? "..." : ""}"`);
-      }
-      break;
-
-    case "meeting.relevance_check": {
-      console.log(`[${config.id}] Relevance check — thinking...`);
-      const context = `You are in a meeting. Current phase: ${msg.phase}.
+client.on("meeting.relevance_check", async (msg) => {
+  console.log(`[${config.id}] Relevance check — thinking...`);
+  const context = `You are in a meeting. Current phase: ${msg.phase}.
 
 Meeting history:
 ${historyContext()}
@@ -276,71 +283,59 @@ Based on your expertise and the discussion so far, how relevant is this to you?
 Reply with EXACTLY one of: MUST_SPEAK, COULD_ADD, or PASS
 Then on a new line, briefly explain why (one sentence).`;
 
-      const response = await chat(context);
-      const firstLine = response.split("\n")[0].toUpperCase().trim();
+  const response = await chat(context);
+  const firstLine = response.split("\n")[0].toUpperCase().trim();
 
-      let level: string = "could_add";
-      if (firstLine.includes("MUST_SPEAK")) level = "must_speak";
-      else if (firstLine.includes("PASS")) level = "pass";
-      else if (firstLine.includes("COULD_ADD")) level = "could_add";
+  let level: "must_speak" | "could_add" | "pass" = "could_add";
+  if (firstLine.includes("MUST_SPEAK")) level = "must_speak";
+  else if (firstLine.includes("PASS")) level = "pass";
+  else if (firstLine.includes("COULD_ADD")) level = "could_add";
 
-      console.log(`[${config.id}] Relevance: ${level.toUpperCase()}`);
-      ws.send(JSON.stringify({
-        type: "meeting.relevance",
-        meetingId: msg.meetingId,
-        level,
-      }));
-      break;
-    }
+  console.log(`[${config.id}] Relevance: ${level.toUpperCase()}`);
+  client.sendRelevance(msg.meetingId, level);
+});
 
-    case "meeting.your_turn": {
-      console.log(`[${config.id}] My turn to speak (phase: ${msg.phase})...`);
+client.on("meeting.your_turn", async (msg) => {
+  console.log(`[${config.id}] My turn to speak (phase: ${msg.phase})...`);
 
-      let prompt: string;
-      if (msg.phase === "decide") {
-        prompt = `You are in a meeting, DECIDE phase. Time to make decisions.
+  let prompt: string;
+  if (msg.phase === "decide") {
+    prompt = `You are in a meeting, DECIDE phase. Time to make decisions.
 
 Meeting history:
 ${historyContext()}
 
 If there are proposals to vote on, share your perspective. Otherwise, propose a concrete decision based on the discussion.
 Keep your response concise (2-4 sentences).`;
-      } else if (msg.phase === "assign") {
-        prompt = `You are in a meeting, ASSIGN phase. Tasks are being assigned.
+  } else if (msg.phase === "assign") {
+    prompt = `You are in a meeting, ASSIGN phase. Tasks are being assigned.
 
 Meeting history:
 ${historyContext()}
 
 Suggest a specific action item or acknowledge any assignments. Keep it brief (1-2 sentences).`;
-      } else {
-        prompt = `You are in a meeting, ${msg.phase.toUpperCase()} phase.
+  } else {
+    prompt = `You are in a meeting, ${msg.phase.toUpperCase()} phase.
 
 Meeting history:
 ${historyContext()}
 
 Share your perspective. Build on what others said, offer new insights, or respectfully disagree.
 Keep your response concise and focused (2-4 sentences). Don't repeat what's been said.`;
-      }
+  }
 
-      const response = await chat(prompt);
-      console.log(`[${config.id}] Speaking: "${response.slice(0, 120)}${response.length > 120 ? "..." : ""}"`);
-      addToHistory(config.id, response);
+  const response = await chat(prompt);
+  console.log(`[${config.id}] Speaking: "${response.slice(0, 120)}${response.length > 120 ? "..." : ""}"`);
+  addToHistory(config.id, response);
+  client.speak(msg.meetingId, response);
+});
 
-      ws.send(JSON.stringify({
-        type: "meeting.speak",
-        meetingId: msg.meetingId,
-        content: response,
-      }));
-      break;
-    }
+client.on("meeting.proposal", async (msg) => {
+  console.log(`[${config.id}] Proposal by ${msg.agentId}: "${msg.proposal.slice(0, 100)}..."`);
+  addToHistory(msg.agentId, `[PROPOSAL] ${msg.proposal}`);
 
-    case "meeting.proposal":
-      console.log(`[${config.id}] Proposal by ${msg.agentId}: "${msg.proposal.slice(0, 100)}..."`);
-      addToHistory(msg.agentId, `[PROPOSAL] ${msg.proposal}`);
-
-      // Auto-vote after thinking
-      setTimeout(async () => {
-        const votePrompt = `A proposal has been made in the meeting:
+  // Auto-vote after thinking
+  const votePrompt = `A proposal has been made in the meeting:
 
 "${msg.proposal}"
 
@@ -349,75 +344,48 @@ ${historyContext()}
 
 Vote: approve, reject, or abstain. Reply with EXACTLY one word on the first line (approve/reject/abstain), then a brief reason on the next line.`;
 
-        const voteResp = await chat(votePrompt);
-        const voteLine = voteResp.split("\n")[0].toLowerCase().trim();
-        let vote = "approve";
-        if (voteLine.includes("reject")) vote = "reject";
-        else if (voteLine.includes("abstain")) vote = "abstain";
+  const voteResp = await chat(votePrompt);
+  const voteLine = voteResp.split("\n")[0].toLowerCase().trim();
+  let voteChoice: "approve" | "reject" | "abstain" = "approve";
+  if (voteLine.includes("reject")) voteChoice = "reject";
+  else if (voteLine.includes("abstain")) voteChoice = "abstain";
 
-        const reason = voteResp.split("\n").slice(1).join(" ").trim() || undefined;
+  const reason = voteResp.split("\n").slice(1).join(" ").trim() || undefined;
 
-        console.log(`[${config.id}] Vote: ${vote.toUpperCase()}${reason ? ` — ${reason.slice(0, 80)}` : ""}`);
-        ws.send(JSON.stringify({
-          type: "meeting.vote",
-          meetingId: msg.meetingId,
-          proposalIndex: msg.proposalIndex,
-          vote,
-          reason,
-        }));
-      }, 500);
-      break;
+  console.log(`[${config.id}] Vote: ${voteChoice.toUpperCase()}${reason ? ` — ${reason.slice(0, 80)}` : ""}`);
+  client.vote(msg.meetingId, msg.proposalIndex, voteChoice, reason);
+});
 
-    case "meeting.vote_result":
-      if (msg.agentId !== config.id) {
-        console.log(`[${config.id}] ${msg.agentId} voted ${msg.vote.toUpperCase()}${msg.reason ? `: ${msg.reason.slice(0, 60)}` : ""}`);
-      }
-      break;
-
-    case "meeting.action_item":
-      console.log(`[${config.id}] Task assigned: "${msg.task}" → ${msg.assigneeId}${msg.deadline ? ` (deadline: ${msg.deadline})` : ""}`);
-      if (msg.assigneeId === config.id) {
-        console.log(`[${config.id}] Acknowledging task...`);
-        ws.send(JSON.stringify({
-          type: "meeting.acknowledge",
-          meetingId: msg.meetingId,
-          taskIndex: msg.taskIndex,
-        }));
-      }
-      break;
-
-    case "meeting.completed":
-      console.log(`[${config.id}] Meeting completed! Decisions: ${msg.decisions?.length ?? 0}, Action items: ${msg.actionItems?.length ?? 0}`);
-      setTimeout(() => process.exit(0), 1000);
-      break;
-
-    case "meeting.cancelled":
-      console.log(`[${config.id}] Meeting cancelled: ${msg.reason}`);
-      setTimeout(() => process.exit(0), 1000);
-      break;
-
-    case "error":
-      console.error(`[${config.id}] Error: ${msg.message}`);
-      break;
-
-    case "pong":
-      break;
-
-    default:
-      // Ignore other messages
-      break;
+client.on("meeting.vote_result", (msg) => {
+  if (msg.agentId !== config.id) {
+    console.log(`[${config.id}] ${msg.agentId} voted ${msg.vote.toUpperCase()}${msg.reason ? `: ${msg.reason.slice(0, 60)}` : ""}`);
   }
 });
 
-// Keepalive ping every 30s
-setInterval(() => {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "ping" }));
+client.on("meeting.action_item", (msg) => {
+  console.log(`[${config.id}] Task assigned: "${msg.task}" → ${msg.assigneeId}${msg.deadline ? ` (deadline: ${msg.deadline})` : ""}`);
+  if (msg.assigneeId === config.id) {
+    console.log(`[${config.id}] Acknowledging task...`);
+    client.acknowledge(msg.meetingId, msg.taskIndex);
   }
-}, 30_000);
+});
+
+client.on("meeting.completed", (msg) => {
+  console.log(`[${config.id}] Meeting completed! Decisions: ${msg.decisions?.length ?? 0}, Action items: ${msg.actionItems?.length ?? 0}`);
+  setTimeout(() => process.exit(0), 1000);
+});
+
+client.on("meeting.cancelled", (msg) => {
+  console.log(`[${config.id}] Meeting cancelled: ${msg.reason}`);
+  setTimeout(() => process.exit(0), 1000);
+});
+
+// --- Connect and go ---
+console.log(`[${config.id}] Connecting to hub...`);
+client.connect();
 
 // Graceful shutdown
 process.on("SIGINT", () => {
   console.log(`\n[${config.id}] Shutting down...`);
-  ws.close();
+  client.disconnect();
 });

@@ -31,13 +31,18 @@
 
 ### Relevance Detector
 - [x] Agent-side relevance detection via LLM prompt → MUST_SPEAK / COULD_ADD / PASS
-- [ ] `src/meeting/relevance.ts` — Server-side relevance prompt builder (reference impl)
+- [x] `src/meeting/relevance.ts` — Server-side relevance prompt builder and response parser (24 tests)
 
 ### Agent Client Library
-- [ ] Reusable TypeScript library wrapping WebSocket connection:
-  - [ ] Auth handshake
-  - [ ] Meeting participation helpers (join, speak, vote, acknowledge)
-  - [ ] Reconnect logic with backoff
+- [x] `src/agent/client.ts` — Reusable TypeScript library wrapping WebSocket connection:
+  - [x] Auth handshake (auto-sends auth on connect)
+  - [x] Meeting participation helpers (join, leave, speak, relevance, propose, vote, assign, acknowledge, create, advance)
+  - [x] Directory helpers (listAgents, getAgent)
+  - [x] Reconnect logic with exponential backoff (configurable max delay)
+  - [x] Ping keepalive (configurable interval)
+  - [x] Event-based dispatch (typed events for all hub message types)
+  - [x] Hub error handling (emitted as `hub.error` to avoid EventEmitter collision)
+  - [x] 20 tests (`tests/agent/client.test.ts`)
   - [ ] Local state cache (offline mode — SPOF Phase 1)
 
 ### Neural Memory Integration
