@@ -1,6 +1,7 @@
 import { testConnection, closeConnection } from "./db/connection.js";
 import { HubServer } from "./hub/server.js";
 import { logger } from "./utils/logger.js";
+import { isLLMAvailable } from "./meeting/summarizer.js";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "9500", 10);
 const WS_HOST = process.env.WS_HOST ?? "127.0.0.1";
@@ -9,10 +10,13 @@ async function main(): Promise<void> {
   logger.info("Archon — Agent Company Platform");
   logger.info("Starting up...");
 
-  // 1. Test database connection
+  // 1. Check LLM availability
+  logger.info({ llmAvailable: isLLMAvailable() }, "Meeting summary LLM status");
+
+  // 2. Test database connection
   await testConnection();
 
-  // 2. Start WebSocket hub
+  // 3. Start WebSocket hub
   const hub = new HubServer();
   await hub.start(WS_PORT, WS_HOST);
 
