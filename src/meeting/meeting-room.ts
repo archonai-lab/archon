@@ -270,9 +270,10 @@ export class MeetingRoom {
   }
 
   private async startRelevanceRound(): Promise<void> {
-    // Send relevance check to all joined participants (except last speaker)
+    // Send relevance check to all joined participants (except initiator and last speaker)
+    // Initiator is the facilitator — they don't participate in relevance rounds
     const checkTargets = [...this.joined].filter(
-      (id) => id !== this.lastMessage?.agentId
+      (id) => id !== this.initiatorId && id !== this.lastMessage?.agentId
     );
 
     if (checkTargets.length === 0) {
