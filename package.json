@@ -10,7 +10,11 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/db/seed.ts",
-    "test": "vitest"
+    "test": "vitest",
+    "review": "bash scripts/review.sh",
+    "review:staged": "bash scripts/review.sh --staged",
+    "review:branch": "bash scripts/review.sh --branch",
+    "review:meeting": "bash scripts/review-meeting.sh"
   },
   "dependencies": {
     "drizzle-orm": "^0.39.0",
