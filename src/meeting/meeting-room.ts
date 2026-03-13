@@ -301,7 +301,8 @@ export class MeetingRoom {
       ? `Last message by ${this.lastMessage.agentId}: "${this.lastMessage.content.slice(0, 200)}"`
       : "Meeting just started.";
 
-    // Send relevance checks
+    // Send relevance checks (skip disconnected agents)
+    const reachable: string[] = [];
     for (const agentId of checkTargets) {
       const check: MeetingRelevanceCheckOut = {
         type: "meeting.relevance_check",
@@ -310,11 +311,23 @@ export class MeetingRoom {
         phase: this.phase,
         contextSummary,
       };
-      this.send(agentId, check);
+      if (this.send(agentId, check)) {
+        reachable.push(agentId);
+      } else {
+        logger.warn({ meetingId: this.id, agentId }, "Agent disconnected, treating as pass");
+      }
+    }
+
+    if (reachable.length === 0) {
+      this.consecutivePasses++;
+      if (this.consecutivePasses >= 1) {
+        await this.advancePhase("all_passed");
+      }
+      return;
     }
 
     // Collect responses (with 10s timeout)
-    const queue = await this.turnManager.collect(checkTargets);
+    const queue = await this.turnManager.collect(reachable);
 
     if (queue.length === 0) {
       // All passed → increment consecutive passes
@@ -350,7 +363,14 @@ export class MeetingRoom {
       phase: this.phase,
       budgetRemaining: currentBudget - currentUsed,
     };
-    this.send(next, turn);
+    const delivered = this.send(next, turn);
+
+    // Agent disconnected — skip their turn
+    if (!delivered) {
+      logger.warn({ meetingId: this.id, agentId: next }, "Agent disconnected, skipping turn");
+      this.currentSpeaker = null;
+      await this.giveNextTurn();
+    }
   }
 
   // --- Phase advancement ---
