@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# =============================================================================
+# review-meeting.sh — Create an Archon meeting where agents review your code.
+#
+# Can be run from any project directory — it reviews the project you're in.
+#
+# Prerequisites:
+#   1. Hub running:  cd ~/archon && npx tsx src/index.ts
+#   2. Agents registered in DB with identity files in ~/.archon/agents/<id>/
+#
+# Usage:
+#   ./review-meeting.sh                        # Review all uncommitted changes
+#   ./review-meeting.sh --staged               # Review only staged changes
+#   ./review-meeting.sh --branch               # Review full branch vs main
+#   ./review-meeting.sh --agents alice,bob      # Choose agents
+#   ./review-meeting.sh --initiator ceo         # Set meeting initiator
+#   ./review-meeting.sh --project ~/my-project  # Review a specific project
+#   ./review-meeting.sh --skip-checks           # Skip tests and type check
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HUB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Parse args
+MODE="all"
+AGENTS=""
+INITIATOR="ceo"
+HUB_URL="ws://localhost:9500"
+SUMMARY_MODE="structured"
+PROJECT_DIR="$(pwd)"
+SKIP_CHECKS=false
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --staged)       MODE="staged"; shift ;;
+    --branch)       MODE="branch"; shift ;;
+    --agents)       AGENTS="$2"; shift 2 ;;
+    --initiator)    INITIATOR="$2"; shift 2 ;;
+    --hub)          HUB_URL="$2"; shift 2 ;;
+    --summary)      SUMMARY_MODE="$2"; shift 2 ;;
+    --project)      PROJECT_DIR="$(cd "$2" && pwd)"; shift 2 ;;
+    --skip-checks)  SKIP_CHECKS=true; shift ;;
+    --help|-h)
+      echo "Usage: review-meeting.sh [--staged|--branch] [OPTIONS]"
+      echo ""
+      echo "Modes:"
+      echo "  (default)   Review all uncommitted changes"
+      echo "  --staged    Review only staged changes"
+      echo "  --branch    Review all commits on current branch vs main"
+      echo ""
+      echo "Options:"
+      echo "  --agents       Comma-separated agent IDs (auto-detected from ~/.archon/agents/ if not set)"
+      echo "  --initiator    Meeting initiator agent ID (default: ceo)"
+      echo "  --hub          Hub WebSocket URL (default: ws://localhost:9500)"
+      echo "  --summary      Summary mode: off, structured, llm (default: structured)"
+      echo "  --project      Project directory to review (default: current directory)"
+      echo "  --skip-checks  Skip test and type check steps"
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+done
+
+cd "$PROJECT_DIR"
+
+# ── Auto-detect agents if not specified ──────────────────────────────────────
+
+if [ -z "$AGENTS" ]; then
+  ARCHON_AGENTS_DIR="$HOME/.archon/agents"
+  if [ -d "$ARCHON_AGENTS_DIR" ]; then
+    DETECTED=()
+    for agent_dir in "$ARCHON_AGENTS_DIR"/*/; do
+      [ -d "$agent_dir" ] || continue
+      agent_id=$(basename "$agent_dir")
+      # Skip the initiator — they run the meeting, not participate
+      [[ "$agent_id" == "$INITIATOR" ]] && continue
+      # Only include agents that have identity files
+      if [ -f "$agent_dir/SOUL.md" ] || [ -f "$agent_dir/IDENTITY.md" ]; then
+        DETECTED+=("$agent_id")
+      fi
+    done
+    if [ ${#DETECTED[@]} -gt 0 ]; then
+      AGENTS=$(IFS=,; echo "${DETECTED[*]}")
+    fi
+  fi
+fi
+
+if [ -z "$AGENTS" ]; then
+  echo -e "${RED}No agents found. Specify --agents or create identity files in ~/.archon/agents/<id>/${NC}"
+  exit 1
+fi
+
+echo -e "${CYAN}━━━ Archon Review Meeting ━━━${NC}"
+echo -e "  Project:   ${PROJECT_DIR}"
+echo -e "  Initiator: ${INITIATOR}"
+echo -e "  Agents:    ${AGENTS}"
+echo ""
+
+# ── Step 1: Gather the diff ──────────────────────────────────────────────────
+
+case $MODE in
+  staged)
+    echo -e "${BLUE}[1/3] Gathering staged changes...${NC}"
+    DIFF=$(git diff --cached)
+    DIFF_STAT=$(git diff --cached --stat)
+    ;;
+  branch)
+    BASE_BRANCH=$(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null || echo "HEAD~5")
+    echo -e "${BLUE}[1/3] Gathering branch changes...${NC}"
+    DIFF=$(git diff "$BASE_BRANCH"...HEAD)
+    DIFF_STAT=$(git diff "$BASE_BRANCH"...HEAD --stat)
+    ;;
+  all)
+    echo -e "${BLUE}[1/3] Gathering all uncommitted changes...${NC}"
+    DIFF=$(git diff HEAD)
+    DIFF_STAT=$(git diff HEAD --stat)
+    ;;
+esac
+
+if [ -z "$DIFF" ]; then
+  echo -e "${YELLOW}No changes to review.${NC}"
+  exit 0
+fi
+
+FILE_COUNT=$(echo "$DIFF_STAT" | tail -1)
+echo -e "  ${FILE_COUNT}"
+echo ""
+
+# ── Step 2: Run checks (if available and not skipped) ────────────────────────
+
+CHECK_RESULTS=""
+
+if ! $SKIP_CHECKS; then
+  echo -e "${BLUE}[2/3] Running automated checks...${NC}"
+
+  # Tests — try common test runners
+  if [ -f "package.json" ]; then
+    TEST_CMD=""
+    if command -v npx &>/dev/null; then
+      if npx --no-install vitest --version &>/dev/null 2>&1; then
+        TEST_CMD="npx vitest run"
+      elif npx --no-install jest --version &>/dev/null 2>&1; then
+        TEST_CMD="npx jest"
+      elif grep -q '"test"' package.json 2>/dev/null; then
+        TEST_CMD="npm test --"
+      fi
+    fi
+
+    if [ -n "$TEST_CMD" ]; then
+      if $TEST_CMD 2>&1 > /tmp/review-meeting-tests.txt; then
+        echo -e "  ${GREEN}Tests passed${NC}"
+        CHECK_RESULTS="${CHECK_RESULTS}Tests: PASSED\n"
+      else
+        echo -e "  ${RED}Tests failed${NC}"
+        CHECK_RESULTS="${CHECK_RESULTS}Tests: FAILED\n"
+      fi
+    else
+      echo -e "  ${YELLOW}No test runner detected, skipping${NC}"
+    fi
+  fi
+
+  # Type check — try tsc if available
+  if [ -f "tsconfig.json" ] && command -v npx &>/dev/null; then
+    if npx tsc --noEmit 2>&1 > /tmp/review-meeting-tsc.txt; then
+      echo -e "  ${GREEN}Type check passed${NC}"
+      CHECK_RESULTS="${CHECK_RESULTS}Type check: PASSED\n"
+    else
+      echo -e "  ${RED}Type check failed${NC}"
+      CHECK_RESULTS="${CHECK_RESULTS}Type check: FAILED\n"
+    fi
+  fi
+
+  # Lint — try if configured
+  if [ -f "package.json" ] && grep -q '"lint"' package.json 2>/dev/null; then
+    if npm run lint --silent 2>&1 > /tmp/review-meeting-lint.txt; then
+      echo -e "  ${GREEN}Lint passed${NC}"
+      CHECK_RESULTS="${CHECK_RESULTS}Lint: PASSED\n"
+    else
+      echo -e "  ${RED}Lint failed${NC}"
+      CHECK_RESULTS="${CHECK_RESULTS}Lint: FAILED\n"
+    fi
+  fi
+
+  if [ -z "$CHECK_RESULTS" ]; then
+    echo -e "  ${YELLOW}No checks available for this project${NC}"
+  fi
+  echo ""
+else
+  echo -e "${YELLOW}[2/3] Skipping checks (--skip-checks)${NC}"
+  echo ""
+fi
+
+# ── Step 3: Create review meeting via Archon hub ─────────────────────────────
+
+echo -e "${BLUE}[3/3] Creating review meeting on Archon hub...${NC}"
+echo ""
+
+# Write full diff to temp file (agents can read it if needed)
+DIFF_FILE="/tmp/archon-review-diff.patch"
+echo "$DIFF" > "$DIFF_FILE"
+DIFF_LINES=$(echo "$DIFF" | wc -l)
+
+# Build agenda
+AGENDA=$(cat <<AGENDA_EOF
+Code Review — ${FILE_COUNT}
+$(if [ -n "$CHECK_RESULTS" ]; then echo -e "\nAutomated checks:\n${CHECK_RESULTS}"; fi)
+Changed files:
+${DIFF_STAT}
+
+Full diff saved to: ${DIFF_FILE} (${DIFF_LINES} lines)
+
+Key changes (first 80 lines):
+$(echo "$DIFF" | grep "^[+-]" | grep -v "^[+-][+-][+-]" | head -80)
+AGENDA_EOF
+)
+
+# Run the start-meeting script from the hub repo
+cd "$HUB_DIR"
+
+# Unset CLAUDECODE to allow nested sessions
+unset CLAUDECODE
+
+exec npx tsx scripts/start-meeting.ts \
+  --initiator "$INITIATOR" \
+  --agents "$AGENTS" \
+  --title "Code Review: $(cd "$PROJECT_DIR" && git log --oneline -1 HEAD 2>/dev/null || echo 'uncommitted changes')" \
+  --agenda "$AGENDA" \
+  --hub "$HUB_URL"
