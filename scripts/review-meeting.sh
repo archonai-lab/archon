@@ -71,6 +71,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── Preflight checks ─────────────────────────────────────────────────────────
+
+if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+  echo -e "${RED}ERROR: Not a git repository. Run from a git project or use --project <path>${NC}"
+  exit 1
+fi
+
+# Check hub is reachable
+HUB_HOST="${HUB_URL#ws://}"
+HUB_HOST="${HUB_HOST#wss://}"
+HUB_PORT="${HUB_HOST##*:}"
+HUB_HOST="${HUB_HOST%%:*}"
+if command -v nc &>/dev/null; then
+  if ! nc -z -w 2 "$HUB_HOST" "$HUB_PORT" &>/dev/null; then
+    echo -e "${RED}ERROR: Hub not reachable at ${HUB_URL}. Start the hub: cd ~/archon && npm run dev${NC}"
+    exit 1
+  fi
+elif ! (echo >/dev/tcp/"$HUB_HOST"/"$HUB_PORT") &>/dev/null 2>&1; then
+  echo -e "${RED}ERROR: Hub not reachable at ${HUB_URL}. Start the hub: cd ~/archon && npm run dev${NC}"
+  exit 1
+fi
+
 cd "$PROJECT_DIR"
 
 # ── Auto-detect agents if not specified ──────────────────────────────────────

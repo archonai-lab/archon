@@ -60,6 +60,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ── Preflight checks ─────────────────────────────────────────────────────────
+
+if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+  echo -e "${RED}ERROR: Not a git repository. Run from a git project or use --project <path>${NC}"
+  exit 1
+fi
+
 cd "$PROJECT_DIR"
 
 # ── Step 1: Gather the diff ──────────────────────────────────────────────────
