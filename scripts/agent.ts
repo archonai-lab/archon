@@ -135,8 +135,7 @@ function runCli(command: string, args: string[], stdin?: string): Promise<string
 
 async function chatViaClaude(userMessage: string): Promise<string> {
   const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
-  // Use --print + stdin (not -p) to avoid hanging in nested sessions.
-  // Pattern from Claw-Empire: prompt via stdin, --print for non-interactive output.
+  // Pass prompt via stdin to avoid OS ARG_MAX limit on large prompts
   const args = [
     "--print",
     "--no-session-persistence",
