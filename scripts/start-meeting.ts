@@ -12,7 +12,6 @@
  */
 
 import WebSocket from "ws";
-import * as readline from "readline";
 
 const args = process.argv.slice(2);
 const get = (flag: string, fallback?: string): string => {
@@ -44,12 +43,6 @@ if (approvalRequired) console.log(`   Phase control: CEO approves each phase tra
 
 const ws = new WebSocket(hubUrl);
 
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-function prompt(question: string): Promise<string> {
-  return new Promise((resolve) => rl.question(question, resolve));
-}
-
 ws.on("open", () => {
   ws.send(JSON.stringify({ type: "auth", agentId: initiatorId, token: initiatorId }));
 });
@@ -66,6 +59,7 @@ ws.on("message", async (raw) => {
         invitees: agentIds,
         tokenBudget: 50000,
         agenda,
+        summaryMode: "llm",
         ...(methodology ? { methodology } : {}),
         ...(approvalRequired ? { approvalRequired: true } : {}),
       }));
@@ -166,14 +160,12 @@ ws.on("message", async (raw) => {
         console.log(`\n   Summary:\n${msg.summary}`);
       }
       console.log(`   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
-      rl.close();
       ws.close();
       setTimeout(() => process.exit(0), 500);
       break;
 
     case "meeting.cancelled":
       console.log(`\n   ❌ Meeting cancelled: ${msg.reason}\n`);
-      rl.close();
       ws.close();
       setTimeout(() => process.exit(0), 500);
       break;
@@ -185,16 +177,23 @@ ws.on("message", async (raw) => {
 });
 
 ws.on("error", (err) => {
-  console.error(`Connection error: ${err.message}`);
+  console.error(`Connection error: ${(err as Error).message}`);
   process.exit(1);
 });
 
-ws.on("close", () => {
-  console.log("   Disconnected.");
+process.on("uncaughtException", (err) => {
+  console.error(`Uncaught exception: ${err.message}\n${err.stack}`);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error(`Unhandled rejection: ${err}`);
+});
+
+ws.on("close", (code, reason) => {
+  console.log(`   Disconnected. (code=${code}, reason=${reason?.toString() || "none"})`);
 });
 
 process.on("SIGINT", () => {
   console.log("\n   Shutting down...");
-  rl.close();
   ws.close();
 });
