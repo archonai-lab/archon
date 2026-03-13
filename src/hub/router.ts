@@ -251,7 +251,8 @@ export class Router {
       return;
     }
 
-    // MVP auth: token must match agent ID
+    // SECURITY: token=agentId is a placeholder — no real authentication.
+    // TODO: Replace with HMAC-signed or JWT tokens before production traffic.
     if (token !== agentId) {
       socket.send(
         JSON.stringify(createError(ErrorCode.AUTH_FAILED, "Invalid token"))
