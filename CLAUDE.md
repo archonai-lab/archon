@@ -25,6 +25,15 @@ npm test                 # Run vitest (watch mode)
 npx vitest run           # Single run
 npx vitest run tests/hub # Run specific directory
 npx vitest run tests/hub/server.test.ts  # Run single test file
+
+# Review (works on any project — run from target project dir)
+npm run review             # Single-agent review of uncommitted changes
+npm run review:staged      # Review staged changes only
+npm run review:branch      # Review full branch vs main
+npm run review:meeting     # Multi-agent Archon review meeting
+# Or from another project:
+bash ~/archon/scripts/review.sh --project ~/my-project
+bash ~/archon/scripts/review-meeting.sh --project ~/my-project
 ```
 
 ## Environment variables
@@ -36,6 +45,9 @@ npx vitest run tests/hub/server.test.ts  # Run single test file
 | `WS_PORT` | `9500` | WebSocket server port |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `NODE_ENV` | — | Set `production` for JSON-only logging |
+| `HUB_LLM_API_KEY` | — | API key for LLM-powered meeting summaries (also configurable via client Settings) |
+| `HUB_LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint for LLM summary |
+| `HUB_LLM_MODEL` | `anthropic/claude-sonnet-4` | Model for LLM summary |
 
 ## Architecture
 
