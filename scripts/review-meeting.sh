@@ -167,6 +167,8 @@ echo ""
 # ── Step 2: Run checks (if available and not skipped) ────────────────────────
 
 CHECK_RESULTS=""
+REVIEW_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$REVIEW_TMPDIR"' EXIT
 
 if ! $SKIP_CHECKS; then
   echo -e "${BLUE}[2/3] Running automated checks...${NC}"
@@ -185,7 +187,7 @@ if ! $SKIP_CHECKS; then
     fi
 
     if [ -n "$TEST_CMD" ]; then
-      if $TEST_CMD 2>&1 > /tmp/review-meeting-tests.txt; then
+      if $TEST_CMD > "$REVIEW_TMPDIR/tests.txt" 2>&1; then
         echo -e "  ${GREEN}Tests passed${NC}"
         CHECK_RESULTS="${CHECK_RESULTS}Tests: PASSED\n"
       else
@@ -199,7 +201,7 @@ if ! $SKIP_CHECKS; then
 
   # Type check — try tsc if available
   if [ -f "tsconfig.json" ] && command -v npx &>/dev/null; then
-    if npx tsc --noEmit 2>&1 > /tmp/review-meeting-tsc.txt; then
+    if npx tsc --noEmit > "$REVIEW_TMPDIR/tsc.txt" 2>&1; then
       echo -e "  ${GREEN}Type check passed${NC}"
       CHECK_RESULTS="${CHECK_RESULTS}Type check: PASSED\n"
     else
@@ -210,7 +212,7 @@ if ! $SKIP_CHECKS; then
 
   # Lint — try if configured
   if [ -f "package.json" ] && grep -q '"lint"' package.json 2>/dev/null; then
-    if npm run lint --silent 2>&1 > /tmp/review-meeting-lint.txt; then
+    if npm run lint --silent > "$REVIEW_TMPDIR/lint.txt" 2>&1; then
       echo -e "  ${GREEN}Lint passed${NC}"
       CHECK_RESULTS="${CHECK_RESULTS}Lint: PASSED\n"
     else
@@ -234,7 +236,7 @@ echo -e "${BLUE}[3/3] Creating review meeting on Archon hub...${NC}"
 echo ""
 
 # Write full diff to temp file (agents can read it if needed)
-DIFF_FILE="/tmp/archon-review-diff.patch"
+DIFF_FILE="$REVIEW_TMPDIR/diff.patch"
 echo "$DIFF" > "$DIFF_FILE"
 DIFF_LINES=$(echo "$DIFF" | wc -l)
 
