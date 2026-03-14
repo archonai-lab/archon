@@ -136,10 +136,12 @@ function runCli(command: string, args: string[], stdin?: string): Promise<string
 async function chatViaClaude(userMessage: string): Promise<string> {
   const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
   // Pass prompt via stdin to avoid OS ARG_MAX limit on large prompts
+  // SECURITY: --dangerously-skip-permissions is dev-only. In production,
+  // use scoped permissions or remove this flag entirely.
   const args = [
     "--print",
     "--no-session-persistence",
-    "--dangerously-skip-permissions",
+    ...(process.env.NODE_ENV === "production" ? [] : ["--dangerously-skip-permissions"]),
   ];
   if (config.model) {
     args.push("--model", config.model);

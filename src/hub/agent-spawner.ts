@@ -148,10 +148,14 @@ export class AgentSpawner {
       // Use tsx from node_modules/.bin
       const tsxPath = resolve(process.cwd(), "node_modules/.bin/tsx");
 
-      // Remove CLAUDECODE env var to allow nested Claude Code sessions
-      // Pass API key via env var (not CLI arg) to avoid exposure in process listings
-      const env = { ...process.env };
-      delete env.CLAUDECODE;
+      // Minimal env for spawned agents — don't leak hub secrets (DATABASE_URL, API keys)
+      const env: Record<string, string | undefined> = {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        NODE_ENV: process.env.NODE_ENV,
+        TERM: process.env.TERM,
+        LANG: process.env.LANG,
+      };
       if (config.apiKey) env.AGENT_API_KEY = config.apiKey;
 
       const proc = spawn(tsxPath, args, {

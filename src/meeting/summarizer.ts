@@ -28,10 +28,16 @@ export function setLLMConfig(key: string, value: unknown): string | null {
       llmConfig.llmApiKey = String(value ?? "");
       logger.info("LLM API key updated");
       return null;
-    case "llmBaseUrl":
-      llmConfig.llmBaseUrl = String(value || "https://openrouter.ai/api/v1");
+    case "llmBaseUrl": {
+      const url = String(value || "https://openrouter.ai/api/v1");
+      // Security: only allow HTTPS URLs to prevent transcript exfiltration
+      if (!url.startsWith("https://")) {
+        return "llmBaseUrl must use HTTPS";
+      }
+      llmConfig.llmBaseUrl = url;
       logger.info({ llmBaseUrl: llmConfig.llmBaseUrl }, "LLM base URL updated");
       return null;
+    }
     case "llmModel":
       llmConfig.llmModel = String(value || "anthropic/claude-sonnet-4");
       logger.info({ llmModel: llmConfig.llmModel }, "LLM model updated");
