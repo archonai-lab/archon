@@ -17,6 +17,6 @@ Agent speech in meetings should follow a three-phase streaming protocol:
 - For built-in agent runtime, streaming LLM tokens as deltas provides better UX
 - Client creates temporary state on `start`, accumulates on `delta`, promotes to permanent on `end`
 
-## Status
+## Consequences
 
 Not yet implemented. Current `meeting.message` broadcasts contain the full message. This ADR captures the intended direction for when streaming is added.

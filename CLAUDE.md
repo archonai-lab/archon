@@ -150,4 +150,4 @@ Rules:
 
 - `PLAN.md` — Full architecture, schema, protocol spec, all 7 milestones
 - `docs/CHANGELOG.md` — Running log of completed work
-- `docs/milestones/01-05` — Per-milestone task tracking
+- `docs/decisions/` — Architecture Decision Records (ADRs)

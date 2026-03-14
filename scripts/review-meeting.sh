@@ -78,11 +78,17 @@ if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
   exit 1
 fi
 
-# Check hub is reachable
-HUB_HOST="${HUB_URL#ws://}"
-HUB_HOST="${HUB_HOST#wss://}"
-HUB_PORT="${HUB_HOST##*:}"
-HUB_HOST="${HUB_HOST%%:*}"
+# Check hub is reachable — parse host:port from URL
+HUB_HOSTPORT="${HUB_URL#ws://}"
+HUB_HOSTPORT="${HUB_HOSTPORT#wss://}"
+HUB_HOSTPORT="${HUB_HOSTPORT%%/*}"  # strip trailing path
+if [[ "$HUB_HOSTPORT" == *:* ]]; then
+  HUB_HOST="${HUB_HOSTPORT%%:*}"
+  HUB_PORT="${HUB_HOSTPORT##*:}"
+else
+  HUB_HOST="$HUB_HOSTPORT"
+  HUB_PORT=80
+fi
 if command -v nc &>/dev/null; then
   if ! nc -z -w 2 "$HUB_HOST" "$HUB_PORT" &>/dev/null; then
     echo -e "${RED}ERROR: Hub not reachable at ${HUB_URL}. Start the hub: cd ~/archon && npm run dev${NC}"
