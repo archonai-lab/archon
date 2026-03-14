@@ -65,7 +65,7 @@ function parseArgs(): {
     provider,
     model: get("--model", ""),
     baseUrl: get("--base-url", process.env.OPENAI_BASE_URL ?? "https://openrouter.ai/api/v1"),
-    apiKey: get("--api-key", process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? ""),
+    apiKey: get("--api-key", process.env.AGENT_API_KEY ?? process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? ""),
     hub: get("--hub", "ws://localhost:9500"),
     persona: get("--persona", ""),
   };

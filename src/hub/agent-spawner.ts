@@ -143,15 +143,16 @@ export class AgentSpawner {
 
     if (config.model) args.push("--model", config.model);
     if (config.baseUrl) args.push("--base-url", config.baseUrl);
-    if (config.apiKey) args.push("--api-key", config.apiKey);
 
     try {
       // Use tsx from node_modules/.bin
       const tsxPath = resolve(process.cwd(), "node_modules/.bin/tsx");
 
       // Remove CLAUDECODE env var to allow nested Claude Code sessions
+      // Pass API key via env var (not CLI arg) to avoid exposure in process listings
       const env = { ...process.env };
       delete env.CLAUDECODE;
+      if (config.apiKey) env.AGENT_API_KEY = config.apiKey;
 
       const proc = spawn(tsxPath, args, {
         stdio: ["ignore", "pipe", "pipe"],

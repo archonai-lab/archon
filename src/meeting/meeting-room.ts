@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "../db/connection.js";
 import { meetings, meetingParticipants, meetingMessages } from "../db/schema.js";
 import { logger } from "../utils/logger.js";
@@ -177,9 +177,10 @@ export class MeetingRoom {
     // Update DB
     db.update(meetingParticipants)
       .set({ joinedAt: new Date() })
-      .where(
-        eq(meetingParticipants.meetingId, this.id)
-      )
+      .where(and(
+        eq(meetingParticipants.meetingId, this.id),
+        eq(meetingParticipants.agentId, agentId),
+      ))
       .then(() => {})
       .catch((e) => logger.error({ error: e }, "Failed to update participant join"));
 
@@ -304,8 +305,8 @@ export class MeetingRoom {
     if (queue.length === 0) {
       // All passed → increment consecutive passes
       this.consecutivePasses++;
-      if (this.consecutivePasses >= 1) {
-        // All agents passed → auto-advance
+      if (this.consecutivePasses >= 2) {
+        // Two consecutive all-pass rounds → auto-advance
         await this.advancePhase();
       }
       return;

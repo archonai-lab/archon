@@ -99,6 +99,8 @@ echo ""
 # ── Step 2: Run checks (if available and not skipped) ────────────────────────
 
 CHECK_SUMMARY=""
+REVIEW_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$REVIEW_TMPDIR"' EXIT
 
 if ! $SKIP_CHECKS; then
   echo -e "${BLUE}[2/3] Running automated checks...${NC}"
@@ -117,12 +119,12 @@ if ! $SKIP_CHECKS; then
     fi
 
     if [ -n "$TEST_CMD" ]; then
-      if $TEST_CMD 2>&1 | tee /tmp/review-tests.txt; then
+      if $TEST_CMD 2>&1 | tee $REVIEW_TMPDIR/tests.txt; then
         echo -e "  ${GREEN}Tests passed${NC}"
         CHECK_SUMMARY="${CHECK_SUMMARY}ALL TESTS PASSED\n"
       else
         echo -e "  ${RED}Tests failed${NC}"
-        CHECK_SUMMARY="${CHECK_SUMMARY}TESTS FAILED:\n$(tail -40 /tmp/review-tests.txt)\n"
+        CHECK_SUMMARY="${CHECK_SUMMARY}TESTS FAILED:\n$(tail -40 $REVIEW_TMPDIR/tests.txt)\n"
       fi
     else
       echo -e "  ${YELLOW}No test runner detected, skipping${NC}"
@@ -131,12 +133,12 @@ if ! $SKIP_CHECKS; then
 
   # Type check
   if [ -f "tsconfig.json" ] && command -v npx &>/dev/null; then
-    if npx tsc --noEmit 2>&1 | tee /tmp/review-tsc.txt; then
+    if npx tsc --noEmit 2>&1 | tee $REVIEW_TMPDIR/tsc.txt; then
       echo -e "  ${GREEN}Type check passed${NC}"
       CHECK_SUMMARY="${CHECK_SUMMARY}TYPE CHECK PASSED\n"
     else
       echo -e "  ${RED}Type check failed${NC}"
-      CHECK_SUMMARY="${CHECK_SUMMARY}TYPE CHECK FAILED:\n$(tail -20 /tmp/review-tsc.txt)\n"
+      CHECK_SUMMARY="${CHECK_SUMMARY}TYPE CHECK FAILED:\n$(tail -20 $REVIEW_TMPDIR/tsc.txt)\n"
     fi
   fi
 

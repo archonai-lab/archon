@@ -39,7 +39,7 @@ export const MeetingLeaveMessage = z.object({
 export const MeetingSpeakMessage = z.object({
   type: z.literal("meeting.speak"),
   meetingId: z.string().min(1),
-  content: z.string().min(1),
+  content: z.string().min(1).max(100_000),
 });
 
 export const MeetingRelevanceMessage = z.object({
