@@ -5,6 +5,7 @@ import {
   jsonb,
   serial,
   integer,
+  boolean,
   primaryKey,
   unique,
   index,
@@ -44,6 +45,7 @@ export const agents = pgTable("agents", {
   status: text("status", { enum: ["active", "deactivated"] })
     .notNull()
     .default("active"),
+  ephemeral: boolean("ephemeral").notNull().default(false),
   agentCard: jsonb("agent_card"),
   modelConfig: jsonb("model_config"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

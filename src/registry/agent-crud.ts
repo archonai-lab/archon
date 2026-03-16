@@ -9,7 +9,7 @@ import { hasPermission } from "../hub/permissions.js";
 import { generateAgentCard } from "./agent-card.js";
 import { assignAgentToDepartment } from "./agent-registry.js";
 import { logger } from "../utils/logger.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,7 @@ export interface CreateAgentOpts {
   departments?: Array<{ departmentId: string; roleId: string }>;
   role?: string;
   modelConfig?: Record<string, unknown>;
+  ephemeral?: boolean;
 }
 
 export interface UpdateAgentOpts {
@@ -100,6 +101,7 @@ Direct and respectful.
       displayName: opts.displayName,
       workspacePath,
       modelConfig: opts.modelConfig ?? null,
+      ephemeral: opts.ephemeral ?? false,
     })
     .returning();
 
@@ -248,4 +250,30 @@ export async function enrichAgentIdentity(
 
   logger.info({ agentId, requester: requesterId, hasIdentity: !!opts.identity, hasSoul: !!opts.soul }, "Agent enriched via protocol");
   return { ok: true };
+}
+
+// --- Hard delete (ephemeral agents) ---
+
+export async function hardDeleteAgent(agentId: string): Promise<void> {
+  const existing = await db.query.agents.findFirst({
+    where: eq(agents.id, agentId),
+  });
+
+  if (!existing) return;
+
+  // Remove DB records (order matters for FK constraints)
+  await db.delete(agentDepartments).where(eq(agentDepartments.agentId, agentId));
+  await db.delete(permissions).where(eq(permissions.agentId, agentId));
+  await db.delete(agents).where(eq(agents.id, agentId));
+
+  // Remove workspace directory
+  if (existing.workspacePath) {
+    try {
+      await rm(existing.workspacePath, { recursive: true, force: true });
+    } catch (err) {
+      logger.warn({ err, agentId, workspacePath: existing.workspacePath }, "Failed to remove ephemeral agent workspace");
+    }
+  }
+
+  logger.info({ agentId }, "Ephemeral agent hard-deleted");
 }

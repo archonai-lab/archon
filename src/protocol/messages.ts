@@ -74,6 +74,7 @@ export const AgentCreateMessage = z.object({
   })).optional(),
   role: z.string().optional(),
   modelConfig: z.record(z.unknown()).optional(),
+  ephemeral: z.boolean().optional(),
 });
 
 export const AgentUpdateMessage = z.object({
