@@ -83,6 +83,10 @@ function loadIdentity(): string {
   for (const dir of [workspaceDir, repoDir]) {
     const soulPath = resolve(dir, "SOUL.md");
     const identityPath = resolve(dir, "IDENTITY.md");
+    const playbookPath = resolve(dir, "PLAYBOOK.md");
+
+    const hasIdentity = existsSync(soulPath) || existsSync(identityPath) || existsSync(playbookPath);
+    if (!hasIdentity) continue;
 
     if (existsSync(soulPath)) {
       parts.push(readFileSync(soulPath, "utf-8"));
@@ -90,11 +94,10 @@ function loadIdentity(): string {
     if (existsSync(identityPath)) {
       parts.push(readFileSync(identityPath, "utf-8"));
     }
-    const playbookPath = resolve(dir, "PLAYBOOK.md");
     if (existsSync(playbookPath)) {
       parts.push(readFileSync(playbookPath, "utf-8"));
     }
-    if (parts.length > 0) break; // use first found
+    break; // use first directory that has any identity files
   }
 
   if (config.persona) {
