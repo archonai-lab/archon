@@ -59,7 +59,7 @@ ws.on("message", async (raw) => {
         invitees: agentIds,
         tokenBudget: 50000,
         agenda,
-        summaryMode: "llm",
+        summaryMode: (process.env.HUB_LLM_API_KEY ? "llm" : "structured") as "off" | "structured" | "llm",
         ...(methodology ? { methodology } : {}),
         ...(approvalRequired ? { approvalRequired: true } : {}),
       }));

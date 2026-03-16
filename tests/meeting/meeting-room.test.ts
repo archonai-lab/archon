@@ -50,7 +50,7 @@ describe("MeetingRoom", () => {
       "test-meeting-1", "test-meeting-budget", "present-test",
       "broadcast-test", "token-test", "decide-test", "complete-test",
       "persist-jsonb-test", "custom-method-test", "custom-budget-test",
-      "approval-test", "custom-proposals-test",
+      "approval-test", "custom-proposals-test", "consecutive-passes-test",
     ];
     for (const id of testMeetingIds) {
       await db.delete(meetingMessages).where(eq(meetingMessages.meetingId, id));
@@ -509,12 +509,13 @@ describe("MeetingRoom", () => {
       send: mockSend,
     });
 
-    // 30% of 10_000 = 3_000 for updates
-    expect(room.getPhaseBudget("updates")).toBe(3_000);
-    // 50% of 10_000 = 5_000 for blockers
-    expect(room.getPhaseBudget("blockers")).toBe(5_000);
-    // 20% of 10_000 = 2_000 for actions
-    expect(room.getPhaseBudget("actions")).toBe(2_000);
+    // Budgets include TOKEN_SAFETY_MARGIN (0.6) to compensate for chars/4 underestimate
+    // 30% of 10_000 * 0.6 = 1_800 for updates
+    expect(room.getPhaseBudget("updates")).toBe(1_800);
+    // 50% of 10_000 * 0.6 = 3_000 for blockers
+    expect(room.getPhaseBudget("blockers")).toBe(3_000);
+    // 20% of 10_000 * 0.6 = 1_200 for actions
+    expect(room.getPhaseBudget("actions")).toBe(1_200);
   });
 
   it("should enforce capabilities from custom methodology", async () => {
@@ -587,5 +588,47 @@ describe("MeetingRoom", () => {
 
     // Now it advanced
     expect(room.getPhase()).toBe("discuss");
+  });
+
+  it("should require 2 consecutive all-pass rounds to auto-advance", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "consecutive-passes-test",
+      title: "Consecutive Passes Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A, AGENT_B],
+      tokenBudget: 50_000,
+      send: mockSend,
+    });
+
+    await room.persist();
+
+    // Join all agents
+    await room.join(INITIATOR);
+    await room.join(AGENT_A);
+    await room.join(AGENT_B);
+
+    // Initiator speaks in present → auto-advances to discuss (initiator_only phase)
+    await room.speak(INITIATOR, "Presenting the topic.");
+    expect(room.getPhase()).toBe("discuss");
+
+    // Wait for relevance round to start (100ms setTimeout in advancePhase)
+    await new Promise((r) => setTimeout(r, 200));
+
+    // First all-pass round: phase should NOT advance
+    sent = [];
+    room.recordRelevance(AGENT_A, "pass");
+    room.recordRelevance(AGENT_B, "pass");
+    // Wait for finalize + next round to start
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(room.getPhase()).toBe("discuss");
+
+    // Second all-pass round: phase SHOULD advance
+    room.recordRelevance(AGENT_A, "pass");
+    room.recordRelevance(AGENT_B, "pass");
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(room.getPhase()).toBe("decide");
   });
 });

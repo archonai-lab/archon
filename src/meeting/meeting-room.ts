@@ -3,7 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/connection.js";
 import { meetings, meetingParticipants, meetingMessages } from "../db/schema.js";
 import { logger } from "../utils/logger.js";
-import { countTokens } from "./token-counter.js";
+import { countTokens, TOKEN_SAFETY_MARGIN } from "./token-counter.js";
 import { generateMeetingSummary, type SummaryMode } from "./summarizer.js";
 import { TurnManager } from "./turn-manager.js";
 import type { Methodology, PhaseCapability } from "./methodology.js";
@@ -22,6 +22,7 @@ import {
   type MeetingCompletedOut,
   type MeetingCancelledOut,
   type MeetingAwaitingApprovalOut,
+  type PhaseEndReason,
 } from "./types.js";
 
 export interface SendFn {
@@ -96,11 +97,15 @@ export class MeetingRoom {
     this.phase = this.methodology.phases[0].name;
     this.phaseIndex = 0;
 
-    // Calculate per-phase budgets from methodology
+    // Calculate per-phase budgets from methodology.
+    // Apply safety margin because chars/4 underestimates real token counts.
     this.phaseBudgets = new Map();
     this.phaseTokensUsed = new Map();
     for (const phaseDef of this.methodology.phases) {
-      this.phaseBudgets.set(phaseDef.name, Math.floor(this.tokenBudget * phaseDef.budget));
+      this.phaseBudgets.set(
+        phaseDef.name,
+        Math.floor(this.tokenBudget * phaseDef.budget * TOKEN_SAFETY_MARGIN),
+      );
       this.phaseTokensUsed.set(phaseDef.name, 0);
     }
 
@@ -220,7 +225,7 @@ export class MeetingRoom {
     // Check phase budget
     if (currentUsed + tokens > currentBudget) {
       // Budget exhausted → auto-advance
-      await this.advancePhase();
+      await this.advancePhase("budget_exhausted");
       return false;
     }
 
@@ -254,7 +259,7 @@ export class MeetingRoom {
 
     // After speaking in initiator_only phase, auto-advance to next phase
     if (this.currentPhaseHas("initiator_only")) {
-      await this.advancePhase();
+      await this.advancePhase("initiator_only");
     } else {
       // In open phases, start next relevance round
       this.currentSpeaker = null;
@@ -271,6 +276,9 @@ export class MeetingRoom {
   }
 
   private async startRelevanceRound(): Promise<void> {
+    // Guard: don't start rounds on completed/cancelled meetings (e.g., from delayed setTimeout)
+    if (this.status !== "active") return;
+
     // Send relevance check to all joined participants (except initiator and last speaker)
     // Initiator is the facilitator — they don't participate in relevance rounds
     const checkTargets = [...this.joined].filter(
@@ -278,7 +286,7 @@ export class MeetingRoom {
     );
 
     if (checkTargets.length === 0) {
-      await this.advancePhase();
+      await this.advancePhase("no_targets");
       return;
     }
 
@@ -287,7 +295,8 @@ export class MeetingRoom {
       ? `Last message by ${this.lastMessage.agentId}: "${this.lastMessage.content.slice(0, 200)}"`
       : "Meeting just started.";
 
-    // Send relevance checks
+    // Send relevance checks (skip disconnected agents)
+    const reachable: string[] = [];
     for (const agentId of checkTargets) {
       const check: MeetingRelevanceCheckOut = {
         type: "meeting.relevance_check",
@@ -296,18 +305,31 @@ export class MeetingRoom {
         phase: this.phase,
         contextSummary,
       };
-      this.send(agentId, check);
+      if (this.send(agentId, check)) {
+        reachable.push(agentId);
+      } else {
+        logger.warn({ meetingId: this.id, agentId }, "Agent disconnected, treating as pass");
+      }
+    }
+
+    if (reachable.length === 0) {
+      // All agents unreachable — advance immediately (no one to wait for)
+      await this.advancePhase("all_passed");
+      return;
     }
 
     // Collect responses (with 10s timeout)
-    const queue = await this.turnManager.collect(checkTargets);
+    const queue = await this.turnManager.collect(reachable);
 
     if (queue.length === 0) {
       // All passed → increment consecutive passes
       this.consecutivePasses++;
       if (this.consecutivePasses >= 2) {
         // Two consecutive all-pass rounds → auto-advance
-        await this.advancePhase();
+        await this.advancePhase("all_passed");
+      } else {
+        // Not enough consecutive passes yet — start another round
+        setTimeout(() => this.startRelevanceRound(), 100);
       }
       return;
     }
@@ -318,25 +340,31 @@ export class MeetingRoom {
   }
 
   private async giveNextTurn(): Promise<void> {
-    if (this.speakingQueue.length === 0) {
-      // Queue exhausted → new relevance round
-      await this.startRelevanceRound();
-      return;
+    // Loop instead of recursion to avoid unbounded stack growth
+    // when multiple queued agents are disconnected
+    while (this.speakingQueue.length > 0) {
+      const next = this.speakingQueue.shift()!;
+      this.currentSpeaker = next;
+
+      const currentUsed = this.phaseTokensUsed.get(this.phase) ?? 0;
+      const currentBudget = this.phaseBudgets.get(this.phase) ?? 0;
+
+      const turn: MeetingYourTurnOut = {
+        type: "meeting.your_turn",
+        meetingId: this.id,
+        phase: this.phase,
+        budgetRemaining: currentBudget - currentUsed,
+      };
+
+      if (this.send(next, turn)) return; // delivered, wait for agent to speak
+
+      // Agent disconnected — skip their turn, try next
+      logger.warn({ meetingId: this.id, agentId: next }, "Agent disconnected, skipping turn");
+      this.currentSpeaker = null;
     }
 
-    const next = this.speakingQueue.shift()!;
-    this.currentSpeaker = next;
-
-    const currentUsed = this.phaseTokensUsed.get(this.phase) ?? 0;
-    const currentBudget = this.phaseBudgets.get(this.phase) ?? 0;
-
-    const turn: MeetingYourTurnOut = {
-      type: "meeting.your_turn",
-      meetingId: this.id,
-      phase: this.phase,
-      budgetRemaining: currentBudget - currentUsed,
-    };
-    this.send(next, turn);
+    // Queue exhausted → new relevance round
+    await this.startRelevanceRound();
   }
 
   // --- Phase advancement ---
@@ -354,7 +382,10 @@ export class MeetingRoom {
     return true;
   }
 
-  private async advancePhase(skipApprovalGate = false): Promise<void> {
+  private async advancePhase(
+    reason: PhaseEndReason = "manual",
+    skipApprovalGate = false,
+  ): Promise<void> {
     // If approval is required, pause and ask initiator before advancing
     if (!skipApprovalGate && this.approvalRequired && !this.awaitingApproval) {
       this.awaitingApproval = true;
@@ -389,16 +420,22 @@ export class MeetingRoom {
 
     // Use methodology phases array for next phase
     if (this.phaseIndex >= this.methodology.phases.length - 1) {
-      await this.completeMeeting();
+      await this.completeMeeting(reason);
       return;
     }
 
+    const prevPhase = this.phase;
     this.phaseIndex++;
     this.phase = this.methodology.phases[this.phaseIndex].name;
     this.currentSpeaker = null;
     this.speakingQueue = [];
     this.consecutivePasses = 0;
     this.awaitingApproval = false;
+
+    logger.info(
+      { meetingId: this.id, from: prevPhase, to: this.phase, reason },
+      "Phase advanced",
+    );
 
     // Update DB
     await db
@@ -421,7 +458,7 @@ export class MeetingRoom {
     if (!this.awaitingApproval) return false;
 
     // Skip the approval gate — this IS the approval
-    await this.advancePhase(/* skipApprovalGate */ true);
+    await this.advancePhase("approval", /* skipApprovalGate */ true);
     return true;
   }
 
@@ -489,7 +526,7 @@ export class MeetingRoom {
       (p) => p.votes.length >= this.joined.size
     );
     if (allVoted) {
-      await this.advancePhase();
+      await this.advancePhase("all_voted");
     }
 
     return true;
@@ -542,7 +579,7 @@ export class MeetingRoom {
     // Check if all items acknowledged → complete
     const allAcked = this.actionItems.every((i) => i.acknowledged);
     if (allAcked && this.actionItems.length > 0) {
-      await this.advancePhase(); // → completed
+      await this.advancePhase("all_acknowledged");
     }
 
     return true;
@@ -550,7 +587,7 @@ export class MeetingRoom {
 
   // --- Completion & cancellation ---
 
-  private async completeMeeting(): Promise<void> {
+  private async completeMeeting(reason?: PhaseEndReason): Promise<void> {
     this.status = "completed";
 
     // Build decisions from approved proposals
@@ -596,12 +633,16 @@ export class MeetingRoom {
       .where(eq(meetings.id, this.id));
 
     // Broadcast completion
+    const totalBudget = [...this.phaseBudgets.values()].reduce((a, b) => a + b, 0);
     const out: MeetingCompletedOut = {
       type: "meeting.completed",
       meetingId: this.id,
       decisions,
       actionItems: this.actionItems,
       summary: summary ?? undefined,
+      reason,
+      finalPhase: this.phase,
+      budgetRemaining: totalBudget - this.tokensUsed,
     };
     this.broadcastToParticipants(out);
 
