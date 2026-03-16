@@ -845,11 +845,19 @@ export class Router {
     this.sendConfigResult(agentId);
   }
 
+  /** Keys that can only be set via environment variables, never via protocol. */
+  private static readonly RESTRICTED_CONFIG_KEYS = ["llmApiKey", "llmBaseUrl"] as const;
+
   private async handleConfigSet(agentId: string, key: string, value: unknown): Promise<void> {
     const { canManageAgents } = await import("../registry/agent-crud.js");
     const isAdmin = await canManageAgents(agentId);
     if (!isAdmin) {
       this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only admins can update hub config"));
+      return;
+    }
+
+    if ((Router.RESTRICTED_CONFIG_KEYS as readonly string[]).includes(key)) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, `Config key "${key}" can only be set via environment variables`));
       return;
     }
 
