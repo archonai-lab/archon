@@ -74,6 +74,7 @@ export const AgentCreateMessage = z.object({
   })).optional(),
   role: z.string().optional(),
   modelConfig: z.record(z.unknown()).optional(),
+  ephemeral: z.boolean().optional(),
 });
 
 export const AgentUpdateMessage = z.object({
@@ -95,6 +96,13 @@ export const AgentDeleteMessage = z.object({
 export const AgentReactivateMessage = z.object({
   type: z.literal("agent.reactivate"),
   agentId: z.string().min(1),
+});
+
+export const AgentEnrichMessage = z.object({
+  type: z.literal("agent.enrich"),
+  agentId: z.string().min(1),
+  identity: z.string().min(1).max(10_000).optional(),
+  soul: z.string().min(1).max(10_000).optional(),
 });
 
 // --- Department CRUD ---
@@ -197,6 +205,7 @@ export const InboundMessage = z.discriminatedUnion("type", [
   AgentUpdateMessage,
   AgentDeleteMessage,
   AgentReactivateMessage,
+  AgentEnrichMessage,
   // Department CRUD
   DepartmentListMessage,
   DepartmentCreateMessage,
@@ -243,6 +252,7 @@ export type AgentCreateMessage = z.infer<typeof AgentCreateMessage>;
 export type AgentUpdateMessage = z.infer<typeof AgentUpdateMessage>;
 export type AgentDeleteMessage = z.infer<typeof AgentDeleteMessage>;
 export type AgentReactivateMessage = z.infer<typeof AgentReactivateMessage>;
+export type AgentEnrichMessage = z.infer<typeof AgentEnrichMessage>;
 export type DepartmentListMessage = z.infer<typeof DepartmentListMessage>;
 export type DepartmentCreateMessage = z.infer<typeof DepartmentCreateMessage>;
 export type DepartmentUpdateMessage = z.infer<typeof DepartmentUpdateMessage>;

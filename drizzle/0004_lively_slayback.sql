@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "ephemeral" boolean DEFAULT false NOT NULL;
