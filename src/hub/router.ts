@@ -9,7 +9,7 @@ import { discoverAgents } from "../registry/discovery.js";
 import { getAgentCard } from "../registry/agent-card.js";
 import { MeetingRoom } from "../meeting/meeting-room.js";
 import { loadMethodology, getDefaultMethodology } from "../meeting/methodology-loader.js";
-import { createAgentFull, updateAgentFull, deleteAgentFull, reactivateAgentFull } from "../registry/agent-crud.js";
+import { createAgentFull, updateAgentFull, deleteAgentFull, reactivateAgentFull, enrichAgentIdentity, hardDeleteAgent } from "../registry/agent-crud.js";
 import {
   listDepartments, createDepartmentFull, updateDepartmentFull, deleteDepartmentFull,
   listRoles, createRoleFull, updateRoleFull, deleteRoleFull,
@@ -95,6 +95,10 @@ export class Router {
 
       case "agent.reactivate":
         await this.handleAgentReactivate(agentId, message.agentId);
+        break;
+
+      case "agent.enrich":
+        await this.handleAgentEnrich(agentId, message);
         break;
 
       // --- Department CRUD ---
@@ -590,7 +594,7 @@ export class Router {
 
   private async handleAgentCreate(
     agentId: string,
-    msg: { name: string; displayName: string; departments?: Array<{ departmentId: string; roleId: string }>; role?: string; modelConfig?: Record<string, unknown> }
+    msg: { name: string; displayName: string; departments?: Array<{ departmentId: string; roleId: string }>; role?: string; modelConfig?: Record<string, unknown>; ephemeral?: boolean }
   ): Promise<void> {
     const result = await createAgentFull(agentId, {
       name: msg.name,
@@ -598,6 +602,7 @@ export class Router {
       departments: msg.departments,
       role: msg.role,
       modelConfig: msg.modelConfig,
+      ephemeral: msg.ephemeral,
     });
 
     if (!result.ok) {
@@ -671,6 +676,28 @@ export class Router {
     this.sessions.send(requesterId, {
       type: "agent.updated",
       agentId: targetAgentId,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleAgentEnrich(
+    agentId: string,
+    msg: { agentId: string; identity?: string; soul?: string }
+  ): Promise<void> {
+    const result = await enrichAgentIdentity(agentId, msg.agentId, {
+      identity: msg.identity,
+      soul: msg.soul,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "agent.enriched",
+      agentId: msg.agentId,
     });
 
     this.broadcastDirectoryUpdated();
@@ -937,7 +964,25 @@ export class Router {
       logger.info({ meetingId, despawned }, "Despawned agents after meeting ended");
     }
     this.activeMeetings.delete(meetingId);
+
+    // Clean up ephemeral agents that were despawned
+    this.cleanupEphemeralAgents(despawned).catch((err) => {
+      logger.error({ err, meetingId }, "Failed to clean up ephemeral agents");
+    });
+
     this.broadcastDirectoryUpdated();
+  }
+
+  private async cleanupEphemeralAgents(agentIds: string[]): Promise<void> {
+    for (const agentId of agentIds) {
+      const agent = await db.query.agents.findFirst({
+        where: eq(agents.id, agentId),
+      });
+      if (agent?.ephemeral) {
+        await hardDeleteAgent(agentId);
+        logger.info({ agentId }, "Cleaned up ephemeral agent after meeting");
+      }
+    }
   }
 
   /** Kill all spawned agent processes (called during shutdown). */

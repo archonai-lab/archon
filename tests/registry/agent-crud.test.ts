@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, closeConnection } from "../../src/db/connection.js";
 import { agents, departments, roles, agentDepartments, permissions } from "../../src/db/schema.js";
-import { createAgentFull, updateAgentFull, deleteAgentFull, canManageAgents } from "../../src/registry/agent-crud.js";
+import { createAgentFull, updateAgentFull, deleteAgentFull, enrichAgentIdentity, canManageAgents } from "../../src/registry/agent-crud.js";
+import { readFile } from "node:fs/promises";
 import { grantPermission } from "../../src/hub/permissions.js";
 
 const ADMIN_AGENT = "crud-test-admin";
@@ -196,6 +197,83 @@ describe("Agent CRUD", () => {
     it("should return error for non-existent agent", async () => {
       const result = await deleteAgentFull(ADMIN_AGENT, "nonexistent-agent");
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe("enrichAgentIdentity", () => {
+    const ENRICH_AGENT = "crud-test-enrich";
+
+    beforeAll(async () => {
+      // Recreate a fresh agent for enrichment tests
+      await db.delete(agents).where(eq(agents.id, ENRICH_AGENT));
+      await createAgentFull(ADMIN_AGENT, {
+        name: ENRICH_AGENT,
+        displayName: "Enrich Test Agent",
+      });
+    });
+
+    afterAll(async () => {
+      await db.delete(agents).where(eq(agents.id, ENRICH_AGENT));
+    });
+
+    it("should overwrite IDENTITY.md when identity is provided", async () => {
+      const identity = "# Custom Identity\n\n- **Name**: Sentinel\n- **Title**: Security Specialist";
+      const result = await enrichAgentIdentity(ADMIN_AGENT, ENRICH_AGENT, { identity });
+
+      expect(result.ok).toBe(true);
+
+      // Verify file was written
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, ENRICH_AGENT) });
+      const content = await readFile(`${agent!.workspacePath}/IDENTITY.md`, "utf-8");
+      expect(content).toBe(identity);
+    });
+
+    it("should overwrite SOUL.md when soul is provided", async () => {
+      const soul = "# Soul\n\n## Personality\nParanoid and aggressive.";
+      const result = await enrichAgentIdentity(ADMIN_AGENT, ENRICH_AGENT, { soul });
+
+      expect(result.ok).toBe(true);
+
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, ENRICH_AGENT) });
+      const content = await readFile(`${agent!.workspacePath}/SOUL.md`, "utf-8");
+      expect(content).toBe(soul);
+    });
+
+    it("should invalidate agent card after enrichment", async () => {
+      const result = await enrichAgentIdentity(ADMIN_AGENT, ENRICH_AGENT, {
+        identity: "# Updated Identity",
+      });
+
+      expect(result.ok).toBe(true);
+
+      // Agent card should have been regenerated (not null)
+      const agent = await db.query.agents.findFirst({ where: eq(agents.id, ENRICH_AGENT) });
+      expect(agent!.agentCard).not.toBeNull();
+    });
+
+    it("should reject enrichment from non-admin", async () => {
+      const result = await enrichAgentIdentity(REGULAR_AGENT, ENRICH_AGENT, {
+        identity: "# Hacked Identity",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("Permission denied");
+    });
+
+    it("should reject enrichment for non-existent agent", async () => {
+      const result = await enrichAgentIdentity(ADMIN_AGENT, "nonexistent-agent", {
+        identity: "# Nope",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("not found");
+    });
+
+    it("should reject when neither identity nor soul is provided", async () => {
+      const result = await enrichAgentIdentity(ADMIN_AGENT, ENRICH_AGENT, {});
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("at least one");
     });
   });
 });
