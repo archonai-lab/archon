@@ -202,3 +202,50 @@ export async function deleteAgentFull(
   logger.info({ agentId, requester: requesterId }, "Agent deactivated via protocol");
   return { ok: true };
 }
+
+// --- Enrich ---
+
+export interface EnrichAgentOpts {
+  identity?: string;
+  soul?: string;
+}
+
+export async function enrichAgentIdentity(
+  requesterId: string,
+  agentId: string,
+  opts: EnrichAgentOpts
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const allowed = await canManageAgents(requesterId);
+  if (!allowed) return { ok: false, error: "Permission denied: only admin/CEO can enrich agents" };
+
+  const existing = await db.query.agents.findFirst({
+    where: eq(agents.id, agentId),
+  });
+  if (!existing) return { ok: false, error: `Agent "${agentId}" not found` };
+  if (!existing.workspacePath) return { ok: false, error: `Agent "${agentId}" has no workspace` };
+
+  if (!opts.identity && !opts.soul) {
+    return { ok: false, error: "Must provide at least one of identity or soul" };
+  }
+
+  try {
+    if (opts.identity) {
+      await writeFile(join(existing.workspacePath, "IDENTITY.md"), opts.identity, "utf-8");
+    }
+    if (opts.soul) {
+      await writeFile(join(existing.workspacePath, "SOUL.md"), opts.soul, "utf-8");
+    }
+  } catch (err) {
+    logger.error({ err, agentId }, "Failed to write enrichment files");
+    return { ok: false, error: "Failed to write identity files to workspace" };
+  }
+
+  // Invalidate cached agent card so it regenerates with new content
+  await db.update(agents).set({ agentCard: null, updatedAt: new Date() }).where(eq(agents.id, agentId));
+
+  // Regenerate agent card
+  await generateAgentCard(agentId);
+
+  logger.info({ agentId, requester: requesterId, hasIdentity: !!opts.identity, hasSoul: !!opts.soul }, "Agent enriched via protocol");
+  return { ok: true };
+}

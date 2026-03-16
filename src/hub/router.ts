@@ -9,7 +9,7 @@ import { discoverAgents } from "../registry/discovery.js";
 import { getAgentCard } from "../registry/agent-card.js";
 import { MeetingRoom } from "../meeting/meeting-room.js";
 import { loadMethodology, getDefaultMethodology } from "../meeting/methodology-loader.js";
-import { createAgentFull, updateAgentFull, deleteAgentFull, reactivateAgentFull } from "../registry/agent-crud.js";
+import { createAgentFull, updateAgentFull, deleteAgentFull, reactivateAgentFull, enrichAgentIdentity } from "../registry/agent-crud.js";
 import {
   listDepartments, createDepartmentFull, updateDepartmentFull, deleteDepartmentFull,
   listRoles, createRoleFull, updateRoleFull, deleteRoleFull,
@@ -95,6 +95,10 @@ export class Router {
 
       case "agent.reactivate":
         await this.handleAgentReactivate(agentId, message.agentId);
+        break;
+
+      case "agent.enrich":
+        await this.handleAgentEnrich(agentId, message);
         break;
 
       // --- Department CRUD ---
@@ -670,6 +674,28 @@ export class Router {
     this.sessions.send(requesterId, {
       type: "agent.updated",
       agentId: targetAgentId,
+    });
+
+    this.broadcastDirectoryUpdated();
+  }
+
+  private async handleAgentEnrich(
+    agentId: string,
+    msg: { agentId: string; identity?: string; soul?: string }
+  ): Promise<void> {
+    const result = await enrichAgentIdentity(agentId, msg.agentId, {
+      identity: msg.identity,
+      soul: msg.soul,
+    });
+
+    if (!result.ok) {
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, {
+      type: "agent.enriched",
+      agentId: msg.agentId,
     });
 
     this.broadcastDirectoryUpdated();
