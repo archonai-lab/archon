@@ -27,11 +27,12 @@ function lastMessageOfType(type: string) {
 const INITIATOR = "meeting-test-initiator";
 const AGENT_A = "meeting-test-a";
 const AGENT_B = "meeting-test-b";
+const NON_PARTICIPANT = "meeting-test-outsider";
 
 describe("MeetingRoom", () => {
   beforeAll(async () => {
     // Create test agents
-    for (const id of [INITIATOR, AGENT_A, AGENT_B]) {
+    for (const id of [INITIATOR, AGENT_A, AGENT_B, NON_PARTICIPANT]) {
       await db
         .insert(agents)
         .values({
@@ -51,13 +52,14 @@ describe("MeetingRoom", () => {
       "broadcast-test", "token-test", "decide-test", "complete-test",
       "persist-jsonb-test", "custom-method-test", "custom-budget-test",
       "approval-test", "custom-proposals-test", "consecutive-passes-test",
+      "decide-auth-test", "assign-auth-test",
     ];
     for (const id of testMeetingIds) {
       await db.delete(meetingMessages).where(eq(meetingMessages.meetingId, id));
       await db.delete(meetingParticipants).where(eq(meetingParticipants.meetingId, id));
       await db.delete(meetings).where(eq(meetings.id, id));
     }
-    for (const id of [INITIATOR, AGENT_A, AGENT_B]) {
+    for (const id of [INITIATOR, AGENT_A, AGENT_B, NON_PARTICIPANT]) {
       await db.delete(agents).where(eq(agents.id, id));
     }
     await closeConnection();
@@ -588,6 +590,115 @@ describe("MeetingRoom", () => {
 
     // Now it advanced
     expect(room.getPhase()).toBe("discuss");
+  });
+
+  // --- Authorization tests: non-participants cannot act in DECIDE/ASSIGN ---
+
+  it("should reject propose from non-participant in DECIDE phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "decide-auth-test",
+      title: "Decide Auth Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    // Advance to DECIDE
+    await room.advance(INITIATOR); // PRESENT → DISCUSS
+    await room.advance(INITIATOR); // DISCUSS → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    // Participant can propose
+    expect(await room.propose(AGENT_A, "Valid proposal")).toBe(true);
+
+    // Non-participant cannot propose (not joined)
+    expect(await room.propose(NON_PARTICIPANT, "Sneaky proposal")).toBe(false);
+    expect(room.getProposals()).toHaveLength(1); // only the valid one
+  });
+
+  it("should reject vote from non-participant in DECIDE phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "decide-auth-test",
+      title: "Decide Auth Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    // Advance to DECIDE
+    await room.advance(INITIATOR); // PRESENT → DISCUSS
+    await room.advance(INITIATOR); // DISCUSS → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    await room.propose(AGENT_A, "Some proposal");
+
+    // Participant can vote
+    expect(await room.vote(AGENT_A, 0, "approve")).toBe(true);
+
+    // Non-participant cannot vote
+    expect(await room.vote(NON_PARTICIPANT, 0, "approve")).toBe(false);
+  });
+
+  it("should reject assignTask from non-participant in ASSIGN phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "assign-auth-test",
+      title: "Assign Auth Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    // Advance to ASSIGN
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    await room.advance(INITIATOR); // → ASSIGN
+    expect(room.getPhase()).toBe("assign");
+
+    // Participant can assign
+    expect(await room.assignTask(INITIATOR, "Real task", AGENT_A)).toBe(true);
+
+    // Non-participant cannot assign
+    expect(await room.assignTask(NON_PARTICIPANT, "Sneaky task", AGENT_A)).toBe(false);
+    expect(room.getActionItems()).toHaveLength(1); // only the valid one
+  });
+
+  it("should reject acknowledge from non-participant in ASSIGN phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "assign-auth-test",
+      title: "Assign Auth Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    // Advance to ASSIGN
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    await room.advance(INITIATOR); // → ASSIGN
+    expect(room.getPhase()).toBe("assign");
+
+    // Assign a task to AGENT_A
+    await room.assignTask(INITIATOR, "Do something", AGENT_A);
+
+    // Non-participant cannot acknowledge (even if they guess the task index)
+    expect(await room.acknowledge(NON_PARTICIPANT, 0)).toBe(false);
+
+    // Correct assignee can acknowledge
+    expect(await room.acknowledge(AGENT_A, 0)).toBe(true);
   });
 
   it("should require 2 consecutive all-pass rounds to auto-advance", async () => {
