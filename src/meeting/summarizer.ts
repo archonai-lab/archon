@@ -9,10 +9,29 @@ export interface LLMConfig {
   llmModel: string;
 }
 
+const DEFAULT_LLM_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Validate a base URL at startup. Non-HTTPS custom URLs are rejected
+ * to prevent sending API keys in plaintext. Returns the validated URL
+ * or the default if the custom URL is invalid.
+ */
+export function validateLLMBaseUrl(url: string | undefined): string {
+  const resolved = url || DEFAULT_LLM_BASE_URL;
+  if (!resolved.startsWith("https://")) {
+    logger.warn(
+      { providedUrl: resolved },
+      "HUB_LLM_BASE_URL must use HTTPS — falling back to default"
+    );
+    return DEFAULT_LLM_BASE_URL;
+  }
+  return resolved;
+}
+
 /** Runtime LLM config — initialized from env vars, changeable via config.set. */
 const llmConfig: LLMConfig = {
   llmApiKey: process.env.HUB_LLM_API_KEY ?? "",
-  llmBaseUrl: process.env.HUB_LLM_BASE_URL || "https://openrouter.ai/api/v1",
+  llmBaseUrl: validateLLMBaseUrl(process.env.HUB_LLM_BASE_URL),
   llmModel: process.env.HUB_LLM_MODEL || "anthropic/claude-sonnet-4",
 };
 
