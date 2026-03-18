@@ -146,8 +146,21 @@ Rules:
 - **One logical change per commit** — don't mix unrelated changes in a single commit
 - **One logical change per PR** — don't mix unrelated changes in a single PR
 
+## Documentation sync (MANDATORY)
+
+Every PR that changes application behavior **must** include corresponding updates to `docs-site/src/content/docs/`. Documentation is not a follow-up task — it ships with the code.
+
+Before marking a PR complete, check:
+- New message type → update `reference/protocol.md`
+- Schema change → update `architecture/database.md`
+- Meeting feature → update `architecture/meeting-lifecycle.md`
+- Agent feature → update `architecture/agent-system.md`
+- Config change → update `getting-started/configuration.md`
+- New methodology → update `guides/methodologies.md`
+
 ## Key docs
 
 - `PLAN.md` — Full architecture, schema, protocol spec, all 7 milestones
+- `docs-site/` — Developer documentation site (Astro Starlight)
 - `docs/CHANGELOG.md` — Running log of completed work
 - `docs/decisions/` — Architecture Decision Records (ADRs)
