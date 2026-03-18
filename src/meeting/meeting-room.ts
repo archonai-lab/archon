@@ -369,6 +369,12 @@ export class MeetingRoom {
 
   // --- Phase advancement ---
 
+  /** Check if all proposals have been voted on by all joined participants. */
+  private allProposalsVoted(): boolean {
+    if (this.proposals.length === 0) return true; // no proposals = nothing to block on
+    return this.proposals.every((p) => p.votes.length >= this.joined.size);
+  }
+
   async advance(agentId: string): Promise<boolean> {
     // Only initiator can manually advance
     if (agentId !== this.initiatorId) return false;
@@ -376,6 +382,11 @@ export class MeetingRoom {
     // If awaiting approval, treat advance as approve
     if (this.awaitingApproval) {
       return this.approve(agentId);
+    }
+
+    // In DECIDE phase, cannot advance until all proposals are voted on
+    if (this.currentPhaseHas("proposals") && !this.allProposalsVoted()) {
+      return false;
     }
 
     await this.advancePhase();
@@ -568,6 +579,7 @@ export class MeetingRoom {
   }
 
   async acknowledge(agentId: string, taskIndex: number): Promise<boolean> {
+    if (!this.joined.has(agentId)) return false;
     if (!this.currentPhaseHas("assignments")) return false;
     if (taskIndex < 0 || taskIndex >= this.actionItems.length) return false;
 

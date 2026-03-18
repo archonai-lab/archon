@@ -27,11 +27,13 @@ function lastMessageOfType(type: string) {
 const INITIATOR = "meeting-test-initiator";
 const AGENT_A = "meeting-test-a";
 const AGENT_B = "meeting-test-b";
+const NON_PARTICIPANT = "meeting-test-outsider";
+const INVITED_NOT_JOINED = "meeting-test-invited-absent";
 
 describe("MeetingRoom", () => {
   beforeAll(async () => {
     // Create test agents
-    for (const id of [INITIATOR, AGENT_A, AGENT_B]) {
+    for (const id of [INITIATOR, AGENT_A, AGENT_B, NON_PARTICIPANT, INVITED_NOT_JOINED]) {
       await db
         .insert(agents)
         .values({
@@ -51,13 +53,17 @@ describe("MeetingRoom", () => {
       "broadcast-test", "token-test", "decide-test", "complete-test",
       "persist-jsonb-test", "custom-method-test", "custom-budget-test",
       "approval-test", "custom-proposals-test", "consecutive-passes-test",
+      "decide-auth-propose-test", "decide-auth-vote-test",
+      "assign-auth-test", "assign-auth-ack-test",
+      "decide-advance-incomplete-test", "advance-non-initiator-test",
+      "invited-not-joined-test",
     ];
     for (const id of testMeetingIds) {
       await db.delete(meetingMessages).where(eq(meetingMessages.meetingId, id));
       await db.delete(meetingParticipants).where(eq(meetingParticipants.meetingId, id));
       await db.delete(meetings).where(eq(meetings.id, id));
     }
-    for (const id of [INITIATOR, AGENT_A, AGENT_B]) {
+    for (const id of [INITIATOR, AGENT_A, AGENT_B, NON_PARTICIPANT, INVITED_NOT_JOINED]) {
       await db.delete(agents).where(eq(agents.id, id));
     }
     await closeConnection();
@@ -588,6 +594,176 @@ describe("MeetingRoom", () => {
 
     // Now it advanced
     expect(room.getPhase()).toBe("discuss");
+  });
+
+  // --- Authorization tests: non-participants cannot act in DECIDE/ASSIGN ---
+
+  it("should reject propose from non-participant in DECIDE phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "decide-auth-propose-test",
+      title: "Decide Auth Propose Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // PRESENT → DISCUSS
+    await room.advance(INITIATOR); // DISCUSS → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    expect(await room.propose(AGENT_A, "Valid proposal")).toBe(true);
+    expect(await room.propose(NON_PARTICIPANT, "Sneaky proposal")).toBe(false);
+    expect(room.getProposals()).toHaveLength(1);
+  });
+
+  it("should reject vote from non-participant in DECIDE phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "decide-auth-vote-test",
+      title: "Decide Auth Vote Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // PRESENT → DISCUSS
+    await room.advance(INITIATOR); // DISCUSS → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    await room.propose(AGENT_A, "Some proposal");
+    expect(await room.vote(AGENT_A, 0, "approve")).toBe(true);
+    expect(await room.vote(NON_PARTICIPANT, 0, "approve")).toBe(false);
+  });
+
+  it("should reject assignTask from non-participant in ASSIGN phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "assign-auth-test",
+      title: "Assign Auth Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    await room.advance(INITIATOR); // → ASSIGN
+    expect(room.getPhase()).toBe("assign");
+
+    expect(await room.assignTask(INITIATOR, "Real task", AGENT_A)).toBe(true);
+    expect(await room.assignTask(NON_PARTICIPANT, "Sneaky task", AGENT_A)).toBe(false);
+    expect(room.getActionItems()).toHaveLength(1);
+  });
+
+  it("should reject acknowledge from non-participant in ASSIGN phase", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "assign-auth-ack-test",
+      title: "Assign Auth Ack Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    await room.advance(INITIATOR); // → ASSIGN
+    expect(room.getPhase()).toBe("assign");
+
+    await room.assignTask(INITIATOR, "Do something", AGENT_A);
+    expect(await room.acknowledge(NON_PARTICIPANT, 0)).toBe(false);
+    expect(room.getActionItems()[0].acknowledged).toBe(false); // side-effect check
+    expect(await room.acknowledge(AGENT_A, 0)).toBe(true);
+  });
+
+  // --- Invited-but-not-joined agent should also be blocked ---
+
+  it("should reject propose from invited-but-not-joined agent", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "invited-not-joined-test",
+      title: "Invited Not Joined Test",
+      initiatorId: INITIATOR,
+      // deliberately invited but will NOT call room.join(INVITED_NOT_JOINED)
+      invitees: [AGENT_A, INVITED_NOT_JOINED],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+    // INVITED_NOT_JOINED is invited but never joins
+
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    expect(await room.propose(INVITED_NOT_JOINED, "Absent proposal")).toBe(false);
+    expect(await room.vote(INVITED_NOT_JOINED, 0, "approve")).toBe(false);
+  });
+
+  // --- Non-initiator cannot force-advance ---
+
+  it("should reject advance from non-initiator", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "advance-non-initiator-test",
+      title: "Advance Non-Initiator Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // → DISCUSS
+    expect(room.getPhase()).toBe("discuss");
+
+    // Non-initiator cannot advance
+    expect(await room.advance(AGENT_A)).toBe(false);
+    expect(room.getPhase()).toBe("discuss"); // unchanged
+  });
+
+  // --- Cannot advance DECIDE with incomplete voting ---
+
+  it("should reject advance from DECIDE when voting is incomplete", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "decide-advance-incomplete-test",
+      title: "Decide Advance Incomplete Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.advance(INITIATOR); // → DISCUSS
+    await room.advance(INITIATOR); // → DECIDE
+    expect(room.getPhase()).toBe("decide");
+
+    // Create a proposal but don't vote on it
+    await room.propose(AGENT_A, "Unvoted proposal");
+    expect(room.getProposals()).toHaveLength(1);
+
+    // Initiator tries to skip past DECIDE — should be blocked
+    expect(await room.advance(INITIATOR)).toBe(false);
+    expect(room.getPhase()).toBe("decide"); // unchanged
+    expect(room.getProposals()).toHaveLength(1); // proposals intact
   });
 
   it("should require 2 consecutive all-pass rounds to auto-advance", async () => {
