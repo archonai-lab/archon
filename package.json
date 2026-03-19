@@ -14,7 +14,8 @@
     "review": "bash scripts/review.sh",
     "review:staged": "bash scripts/review.sh --staged",
     "review:branch": "bash scripts/review.sh --branch",
-    "review:meeting": "bash scripts/review-meeting.sh"
+    "review:meeting": "bash scripts/review-meeting.sh",
+    "archon": "tsx scripts/cli.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.39.0",

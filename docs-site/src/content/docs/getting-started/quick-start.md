@@ -31,7 +31,18 @@ npm run db:migrate
 npm run db:seed
 ```
 
-### 4. Start the hub
+### 4. Register agents
+
+Use the [CLI](/reference/cli/#agent-add) to register agents from their workspace directories:
+
+```bash
+npm run archon -- agent add ~/.archon/agents/your-agent
+npm run archon -- agent list   # verify registration
+```
+
+See [Creating Agents](/guides/creating-agents/) for how to write identity files.
+
+### 5. Start the hub
 
 ```bash
 npm run dev

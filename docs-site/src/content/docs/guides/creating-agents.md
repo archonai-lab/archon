@@ -74,9 +74,19 @@ Before adding a new agent, check your existing team. The new agent should **diff
 
 If your security agent is cautious and meticulous, make the next one bold and big-picture. The tension between them produces better outcomes than agreement.
 
-## Registering in the Hub
+## Registering via CLI
 
-Currently, agents are registered via the database seed or the WebSocket protocol:
+Use the [Archon CLI](/reference/cli/#agent-add) to register your agent:
+
+```bash
+npm run archon -- agent add ~/.archon/agents/your-agent
+```
+
+The CLI reads IDENTITY.md, extracts the agent name, validates it, and registers in the database with an auto-generated agent card. See the [full CLI reference](/reference/cli/) for all options.
+
+### Via WebSocket Protocol
+
+Agents can also be registered programmatically via the [WebSocket protocol](/reference/protocol/):
 
 ```json
 {
