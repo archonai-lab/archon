@@ -10,6 +10,33 @@ services:
       - "5432:5432"
     volumes:
       - archon-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U archon"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  hub:
+    build: .
+    container_name: archon-hub
+    ports:
+      - "9500:9500"
+    environment:
+      DATABASE_URL: postgresql://archon:archon@postgres:5432/archon
+      WS_HOST: "0.0.0.0"
+      WS_PORT: "9500"
+      LOG_LEVEL: info
+      HUB_LLM_API_KEY: ${HUB_LLM_API_KEY:-}
+      HUB_LLM_BASE_URL: ${HUB_LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      HUB_LLM_MODEL: ${HUB_LLM_MODEL:-anthropic/claude-sonnet-4}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - archon-agents:/home/node/.archon/agents
+      - archon-methodologies:/home/node/.archon/methodologies
 
 volumes:
   archon-pgdata:
+  archon-agents:
+  archon-methodologies:
