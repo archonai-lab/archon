@@ -20,8 +20,7 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY drizzle ./drizzle
 COPY drizzle.config.ts ./
-COPY agents ./agents
-COPY methodologies ./methodologies
+COPY defaults ./defaults
 
 # drizzle-kit needs to be available for migrations
 RUN npm install drizzle-kit
