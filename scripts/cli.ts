@@ -27,7 +27,7 @@ const subcommand = args[1]; // "add", "list"
 
 function getFlag(flag: string, fallback?: string): string | undefined {
   const idx = args.indexOf(flag);
-  if (idx !== -1 && args[idx + 1]) return args[idx + 1];
+  if (idx !== -1 && args[idx + 1] && !args[idx + 1].startsWith("--")) return args[idx + 1];
   return fallback;
 }
 
@@ -116,7 +116,16 @@ async function agentAdd(): Promise<void> {
     process.exit(1);
   }
 
-  // 2. Check for identity files
+  // 2. Verify path is within a reasonable workspace root (prevent traversal)
+  const archonAgentsDir = resolve(process.env.HOME ?? "", ".archon", "agents");
+  const repoAgentsDir = resolve(process.cwd(), "agents");
+  if (!workspacePath.startsWith(archonAgentsDir) && !workspacePath.startsWith(repoAgentsDir)) {
+    console.error(`Error: Workspace path must be within ~/.archon/agents/ or ./agents/`);
+    console.error(`  Resolved path: ${workspacePath}`);
+    process.exit(1);
+  }
+
+  // 3. Check for identity files
   const hasIdentity = existsSync(resolve(workspacePath, "IDENTITY.md"));
   const hasSoul = existsSync(resolve(workspacePath, "SOUL.md"));
 
@@ -157,7 +166,7 @@ async function agentAdd(): Promise<void> {
   });
 
   if (existing) {
-    console.error(`Error: Agent "${name}" already exists. Use 'agent update' to modify.`);
+    console.error(`Error: Agent "${name}" already exists. Remove the record manually or wait for 'agent update' (see https://github.com/LeviathanST/archon/issues/22).`);
     process.exit(1);
   }
 
@@ -167,40 +176,53 @@ async function agentAdd(): Promise<void> {
   const modelConfig: Record<string, unknown> = { provider };
   if (model) modelConfig.model = model;
 
-  // 7. Insert into database
-  const [agent] = await db
-    .insert(agents)
-    .values({
-      id: name,
-      displayName,
-      workspacePath,
-      modelConfig,
-    })
-    .returning();
-
-  // 8. Assign department if provided
+  // 7. Validate department/role flags
   const departmentId = getFlag("--department");
   const roleId = getFlag("--role");
-  if (departmentId && roleId) {
-    try {
-      await db.insert(agentDepartments).values({
-        agentId: name,
-        departmentId,
-        roleId,
-      });
-    } catch {
-      console.warn(`Warning: Could not assign department "${departmentId}" — check that department and role exist.`);
-    }
+  if (departmentId && !roleId) {
+    console.error("Error: --department requires --role to be specified as well.");
+    process.exit(1);
+  }
+  if (roleId && !departmentId) {
+    console.error("Error: --role requires --department to be specified as well.");
+    process.exit(1);
   }
 
-  // 9. Generate agent card
-  await generateAgentCard(name);
+  // 8. Insert into database + generate card in a transaction
+  try {
+    await db.transaction(async (tx) => {
+      const [agent] = await tx
+        .insert(agents)
+        .values({
+          id: name,
+          displayName,
+          workspacePath,
+          modelConfig,
+        })
+        .returning();
 
-  console.log(`✓ Agent registered`);
-  console.log(`  ID:        ${agent.id}`);
-  console.log(`  Name:      ${agent.displayName}`);
-  console.log(`  Workspace: ${agent.workspacePath}`);
-  console.log(`  Provider:  ${provider}${model ? ` (${model})` : ""}`);
+      // Assign department if provided
+      if (departmentId && roleId) {
+        await tx.insert(agentDepartments).values({
+          agentId: name,
+          departmentId,
+          roleId,
+        });
+      }
+
+      // Generate agent card (writes to same DB within transaction)
+      await generateAgentCard(name);
+
+      console.log(`✓ Agent registered`);
+      console.log(`  ID:        ${agent.id}`);
+      console.log(`  Name:      ${agent.displayName}`);
+      console.log(`  Workspace: ${agent.workspacePath}`);
+      console.log(`  Provider:  ${provider}${model ? ` (${model})` : ""}`);
+    });
+  } catch (err) {
+    console.error(`Error: Failed to register agent — ${String(err)}`);
+    process.exit(1);
+  }
 }
 
 async function agentList(): Promise<void> {
@@ -276,7 +298,12 @@ async function main(): Promise<void> {
 
 main()
   .catch((err) => {
-    console.error(`Error: ${String(err)}`);
+    const msg = String(err);
+    if (msg.includes("connect") || msg.includes("ECONNREFUSED") || msg.includes("password")) {
+      console.error("Error: Cannot connect to database. Is Postgres running? Check DATABASE_URL.");
+    } else {
+      console.error(`Error: ${msg}`);
+    }
     process.exit(1);
   })
   .finally(() => closeConnection());
