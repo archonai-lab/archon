@@ -19,12 +19,29 @@ import { homedir } from "os";
 import type { AgentTask } from "../protocol/types.js";
 import { logger } from "../utils/logger.js";
 
+// --- Agent ID safety ---
+
+/**
+ * Allowlist regex for agentId values.
+ * Reused in the Zod schema and as a runtime guard in loadSkills so there
+ * is exactly one source of truth for the pattern.
+ */
+export const SAFE_AGENT_ID_RE = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Schema for validating loadSkills / matchSkill inputs at the boundary.
+ * Enforces the same agentId allowlist as the runtime guard.
+ */
+export const LoadSkillsInputSchema = z.object({
+  agentId: z.string().regex(SAFE_AGENT_ID_RE),
+});
+
 // --- Frontmatter schema ---
 
 export const SkillFrontmatterSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
-  triggers: z.array(z.string().min(1)),
+  triggers: z.array(z.string().min(2)),
   priority: z.number().int().min(0).max(10).optional(),
 });
 
@@ -95,6 +112,10 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
  * Files are opened read-only.
  */
 export async function loadSkills(agentId: string): Promise<Skill[]> {
+  if (!SAFE_AGENT_ID_RE.test(agentId)) {
+    throw new Error(`Invalid agentId: ${agentId}`);
+  }
+
   const skillsDir = join(homedir(), ".archon", "agents", agentId, "skills");
 
   let entries: string[];
@@ -114,9 +135,10 @@ export async function loadSkills(agentId: string): Promise<Skill[]> {
     // Open read-only (O_RDONLY). realpathSync resolves symlinks and throws
     // on dangling symlinks — both must be handled in the same try/catch.
     let rawContent: string;
+    let resolvedPath: string;
     try {
-      const resolvedPath = realpathSync(filePath);
-      if (!resolvedPath.startsWith(skillsDir)) {
+      resolvedPath = realpathSync(filePath);
+      if (!resolvedPath.startsWith(skillsDir + "/") && resolvedPath !== skillsDir) {
         logger.warn(
           { filePath, resolvedPath, skillsDir },
           "Skill file resolves outside skills dir (symlink escape), skipping"
@@ -158,11 +180,13 @@ export async function loadSkills(agentId: string): Promise<Skill[]> {
       continue;
     }
 
+    // Store resolvedPath (not filePath) so verifyAndGetBody re-reads
+    // the same resolved target, closing the TOCTOU symlink window.
     skills.push({
       frontmatter: result.data,
       body: parsed.body,
       hash,
-      filePath,
+      filePath: resolvedPath,
     });
   }
 
@@ -202,8 +226,9 @@ export function matchSkill(task: AgentTask, skills: Skill[]): Skill | null {
 
     const priority = skill.frontmatter.priority ?? 0;
 
-    // Higher priority wins. On equal priority, higher overlap wins.
-    // On equal both, alphabetical filename wins (skills array is pre-sorted).
+    // Lexicographic ordering: (1) higher priority wins, (2) on equal
+    // priority higher overlap wins, (3) on equal both, first in sorted
+    // array wins (alphabetical filename — skills are pre-sorted).
     if (
       priority > bestPriority ||
       (priority === bestPriority && overlap > bestScore)
@@ -224,6 +249,22 @@ export function matchSkill(task: AgentTask, skills: Skill[]): Skill | null {
  * Returns the body if hash matches, null if tampered.
  */
 export async function verifyAndGetBody(skill: Skill): Promise<string | null> {
+  // Re-resolve to catch symlink swaps between load and verify
+  let currentResolved: string;
+  try {
+    currentResolved = realpathSync(skill.filePath);
+  } catch {
+    logger.error({ filePath: skill.filePath }, "Skill file no longer accessible");
+    return null;
+  }
+  if (currentResolved !== skill.filePath) {
+    logger.error(
+      { filePath: skill.filePath, resolved: currentResolved },
+      "Skill file path changed after load — possible symlink swap"
+    );
+    return null;
+  }
+
   let rawContent: string;
   try {
     const fd = await open(skill.filePath, "r");

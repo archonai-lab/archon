@@ -8,6 +8,8 @@ import {
   verifyAndGetBody,
   normalizeContent,
   hashContent,
+  SAFE_AGENT_ID_RE,
+  LoadSkillsInputSchema,
 } from "../../src/skills/loader.js";
 import type { AgentTask } from "../../src/protocol/types.js";
 
@@ -174,23 +176,34 @@ describe("matchSkill", () => {
     expect(match?.frontmatter.name).toBe("high");
   });
 
-  it("should tiebreak by filename alphabetically", () => {
-    const skills = [
-      {
-        frontmatter: { name: "beta", description: "d", triggers: ["deploy"], priority: 0 },
-        body: "b", hash: "h", filePath: "beta.md",
-      },
-      {
-        frontmatter: { name: "alpha", description: "d", triggers: ["deploy"], priority: 0 },
-        body: "b", hash: "h", filePath: "alpha.md",
-      },
-    ];
+  it("should tiebreak by filename alphabetically via disk load", async () => {
+    // Write two skills with same priority and same trigger — tiebreak by filename
+    writeSkill("beta-deploy.md", `---
+name: beta-deploy
+description: Beta deployment
+triggers: [deploy]
+priority: 5
+---
+
+Beta body.
+`);
+    writeSkill("alpha-deploy.md", `---
+name: alpha-deploy
+description: Alpha deployment
+triggers: [deploy]
+priority: 5
+---
+
+Alpha body.
+`);
+
+    const skills = await loadSkills(TEST_AGENT);
+    expect(skills).toHaveLength(2);
 
     const task: AgentTask = { agentId: "test", input: "deploy the app" };
     const match = matchSkill(task, skills);
-    // alpha.md comes first alphabetically, but the array order matters
-    // Since skills are pre-sorted by loadSkills, first match at equal score wins
-    expect(match).not.toBeNull();
+    // alpha-deploy.md sorts before beta-deploy.md — first match wins
+    expect(match?.frontmatter.name).toBe("alpha-deploy");
   });
 
   it("should return null when no triggers match", () => {
