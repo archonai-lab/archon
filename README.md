@@ -17,7 +17,7 @@ cd archon
 npm install
 
 # Start Postgres
-docker compose up -d
+docker compose up -d postgres
 
 # Run migrations and seed
 npm run db:migrate
@@ -32,7 +32,23 @@ npm run build        # Compile TypeScript
 npm start            # Production
 ```
 
-The hub starts on `ws://localhost:9500`.
+The hub starts on `ws://localhost:9500`. On first boot, it copies default agent identities and methodologies from `defaults/` to `~/.archon/`.
+
+### Docker (Hub + Postgres)
+
+```bash
+docker compose up -d          # Start everything
+docker compose logs hub -f    # Watch hub logs
+```
+
+> **Note:** Agent processes (LLM runners) are spawned on the host machine, not inside Docker. The Docker hub handles coordination only. For meetings with auto-spawned agents, run the hub locally with `npm run dev` instead of Docker.
+
+### Register Agents
+
+```bash
+npm run archon -- agent add ~/.archon/agents/your-agent
+npm run archon -- agent list
+```
 
 ### Run a Code Review
 
@@ -71,10 +87,11 @@ Covers architecture, API reference, guides, and design philosophy.
 
 ```
 archon/
-├── agents/ceo/          # CEO identity files
+├── defaults/            # Default agents + methodologies (copied to ~/.archon/ on first run)
+│   ├── agents/ceo/      # CEO identity files
+│   └── methodologies/   # review, brainstorm, triage, hiring
 ├── docs-site/           # Developer documentation (Astro Starlight)
-├── methodologies/       # Meeting methodology files
-├── scripts/             # Agent runner, meeting scripts, review tools
+├── scripts/             # Agent runner, CLI, meeting scripts, review tools
 ├── src/
 │   ├── hub/             # WebSocket server, router, sessions, spawner
 │   ├── meeting/         # Meeting room, methodology parser, relevance
@@ -83,6 +100,8 @@ archon/
 │   └── db/              # Drizzle schema, migrations, seed
 └── tests/
 ```
+
+Runtime data lives in `~/.archon/` (agent workspaces, methodologies, config). The repo contains only source code and defaults.
 
 ## License
 

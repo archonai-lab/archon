@@ -2,6 +2,7 @@ import { testConnection, closeConnection } from "./db/connection.js";
 import { HubServer } from "./hub/server.js";
 import { logger } from "./utils/logger.js";
 import { isLLMAvailable } from "./meeting/summarizer.js";
+import { ensureArchonHome } from "./setup.js";
 
 const WS_PORT = parseInt(process.env.WS_PORT ?? "9500", 10);
 const WS_HOST = process.env.WS_HOST ?? "127.0.0.1";
@@ -10,7 +11,10 @@ async function main(): Promise<void> {
   logger.info("Archon — Agent Company Platform");
   logger.info("Starting up...");
 
-  // 1. Check LLM availability
+  // 1. Ensure ~/.archon/ exists with defaults
+  ensureArchonHome();
+
+  // 2. Check LLM availability
   logger.info({ llmAvailable: isLLMAvailable() }, "Meeting summary LLM status");
 
   // 2. Test database connection

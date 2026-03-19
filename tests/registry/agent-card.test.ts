@@ -107,7 +107,7 @@ describe("Agent Card", () => {
   it("should generate card for CEO with workspace files", async () => {
     // CEO was seeded with workspace pointing to agents/ceo/
     // Update CEO workspace to point to repo templates
-    const ceoWorkspace = process.cwd() + "/agents/ceo";
+    const ceoWorkspace = process.cwd() + "/defaults/agents/ceo";
     await db
       .update(agents)
       .set({ workspacePath: ceoWorkspace, agentCard: null })

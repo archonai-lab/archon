@@ -51,7 +51,7 @@ bash ~/archon/scripts/review-meeting.sh --project ~/my-project
 
 ## Architecture
 
-**Two directory trees**: The repo (`archon/`) is platform source code. Runtime data lives in `~/.archon/` (agent workspaces, config, templates). No hardcoded paths — everything reads from `~/.archon/config.toml`.
+**Two directory trees**: The repo (`archon/`) is platform source code + defaults. Runtime data lives in `~/.archon/` (agent workspaces, methodologies, config). On first boot, the hub copies `defaults/` to `~/.archon/` (additive, never overwrites existing files).
 
 **Boot sequence** (`src/index.ts`): Test DB connection → start WebSocket hub on `WS_PORT` → register SIGINT/SIGTERM for graceful shutdown.
 

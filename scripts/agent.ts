@@ -75,12 +75,12 @@ const config = parseArgs();
 
 // --- Load identity files if available ---
 function loadIdentity(): string {
+  // Always read from ~/.archon/agents/ — ensureArchonHome() copies defaults there on first boot
   const workspaceDir = resolve(homedir(), `.archon/agents/${config.id}`);
-  const repoDir = resolve(process.cwd(), `agents/${config.id}`);
 
   let parts: string[] = [];
 
-  for (const dir of [workspaceDir, repoDir]) {
+  for (const dir of [workspaceDir]) {
     const soulPath = resolve(dir, "SOUL.md");
     const identityPath = resolve(dir, "IDENTITY.md");
     const playbookPath = resolve(dir, "PLAYBOOK.md");
