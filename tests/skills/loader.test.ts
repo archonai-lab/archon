@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, chmodSync } from "fs";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { mkdirSync, writeFileSync, rmSync, existsSync, chmodSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import {
@@ -19,6 +19,13 @@ function writeSkill(filename: string, content: string): void {
 }
 
 beforeAll(() => {
+  mkdirSync(SKILLS_DIR, { recursive: true });
+});
+
+beforeEach(() => {
+  if (existsSync(SKILLS_DIR)) {
+    rmSync(SKILLS_DIR, { recursive: true });
+  }
   mkdirSync(SKILLS_DIR, { recursive: true });
 });
 
@@ -70,7 +77,7 @@ Missing description and triggers.
 `);
 
     const skills = await loadSkills(TEST_AGENT);
-    // "bad.md" should be skipped, only "review.md" from previous test loads
+    // "bad.md" should be skipped — invalid frontmatter
     const names = skills.map((s) => s.frontmatter.name);
     expect(names).not.toContain("incomplete");
   });
@@ -197,6 +204,15 @@ Verified body content.
   });
 
   it("should return null when file has been modified", async () => {
+    writeSkill("verify.md", `---
+name: verify-test
+description: Test verification
+triggers: [verify]
+---
+
+Verified body content.
+`);
+
     const skills = await loadSkills(TEST_AGENT);
     const skill = skills.find((s) => s.frontmatter.name === "verify-test");
     expect(skill).toBeDefined();
