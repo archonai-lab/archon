@@ -76,6 +76,20 @@ npm run dev                 # http://localhost:4321
 
 Covers architecture, API reference, guides, and design philosophy.
 
+## The Zen of Archon
+
+> Simple over clever. If you can rip it out and the hub still works, it's not core.
+>
+> Platform, not product. You bring the culture. We bring the engine.
+>
+> No templates. Two agents in the same domain should be unique individuals.
+>
+> Every token must earn its place. Agents are people, not functions.
+>
+> Core does three things. Connect agents. Run meetings. Manage identity. Everything else is a plugin.
+
+See the [full Zen](docs-site/src/content/docs/design/zen.md) for all 10 principles.
+
 ## Core Concepts
 
 - **Agents** — Unique individuals with SOUL.md (personality) and IDENTITY.md (role/skills). No templates.
