@@ -8,15 +8,42 @@ export interface AgentSession {
   currentMeetingId: string | null;
 }
 
+export type AddSessionResult =
+  | { ok: true; session: AgentSession }
+  | { ok: false; code: "ALREADY_IN_MEETING"; meetingId: string };
+
 export class SessionManager {
   private sessions = new Map<string, AgentSession>();
 
-  add(agentId: string, socket: WebSocket): AgentSession {
-    // Close existing session if agent reconnects
+  /**
+   * Three-case decision tree for re-auth:
+   * 1. Dead socket (CLOSED/CLOSING) → evict and allow re-auth
+   * 2. Alive socket, no active meeting → replace session
+   * 3. Alive socket, active meeting → reject with ALREADY_IN_MEETING
+   */
+  add(agentId: string, socket: WebSocket): AddSessionResult {
     const existing = this.sessions.get(agentId);
+
     if (existing) {
-      logger.warn({ agentId }, "Agent reconnecting, closing previous session");
-      existing.socket.close(1000, "Replaced by new connection");
+      const isAlive = existing.socket.readyState === existing.socket.OPEN;
+      const hasActiveMeeting = existing.currentMeetingId !== null;
+
+      if (isAlive && hasActiveMeeting) {
+        // Case 3: alive socket with active meeting — reject
+        logger.warn(
+          { agentId, meetingId: existing.currentMeetingId },
+          "Re-auth rejected — agent is in an active meeting"
+        );
+        return { ok: false, code: "ALREADY_IN_MEETING", meetingId: existing.currentMeetingId! };
+      }
+
+      // Case 1 (dead socket) or Case 2 (alive, no meeting) — evict and replace
+      if (isAlive) {
+        logger.warn({ agentId }, "Replacing idle session (no active meeting)");
+        existing.socket.close(1000, "Replaced by new connection");
+      } else {
+        logger.info({ agentId }, "Evicting dead session on reconnect");
+      }
     }
 
     const session: AgentSession = {
@@ -28,12 +55,28 @@ export class SessionManager {
 
     this.sessions.set(agentId, session);
     logger.info({ agentId }, "Agent session created");
-    return session;
+    return { ok: true, session };
   }
 
   remove(agentId: string): void {
     this.sessions.delete(agentId);
     logger.info({ agentId }, "Agent session removed");
+  }
+
+  /** Clear the active meeting for an agent — must be called on all meeting termination paths. */
+  clearMeeting(agentId: string): void {
+    const session = this.sessions.get(agentId);
+    if (session) {
+      session.currentMeetingId = null;
+    }
+  }
+
+  /** Set the active meeting for an agent. */
+  setMeeting(agentId: string, meetingId: string): void {
+    const session = this.sessions.get(agentId);
+    if (session) {
+      session.currentMeetingId = meetingId;
+    }
   }
 
   get(agentId: string): AgentSession | undefined {
