@@ -265,7 +265,17 @@ export class Router {
       return;
     }
 
-    this.sessions.add(agentId, socket);
+    const addResult = this.sessions.add(agentId, socket);
+    if (!addResult.ok) {
+      socket.send(
+        JSON.stringify(createError(
+          ErrorCode.ALREADY_IN_MEETING,
+          `Agent "${agentId}" is already in meeting ${addResult.meetingId}. Disconnect from the current session first.`
+        ))
+      );
+      socket.close(4002, "Already in meeting");
+      return;
+    }
 
     const agentCard = await getAgentCard(agentId);
 
@@ -296,7 +306,7 @@ export class Router {
         // Update session to track current meeting
         const session = this.sessions.get(agentId);
         if (session && !session.currentMeetingId) {
-          session.currentMeetingId = meetingId;
+          this.sessions.setMeeting(agentId, meetingId);
         }
       } else {
         pendingInvites.push(meetingId);
@@ -407,7 +417,7 @@ export class Router {
 
     // Update session
     const session = this.sessions.get(agentId);
-    if (session) session.currentMeetingId = room.id;
+    this.sessions.setMeeting(agentId, room.id);
 
     // Send invites to other participants
     room.sendInvites();
@@ -476,7 +486,7 @@ export class Router {
 
     // Update session
     const session = this.sessions.get(agentId);
-    if (session) session.currentMeetingId = meetingId;
+    this.sessions.setMeeting(agentId, meetingId);
 
     // Send current meeting state to the joining agent
     this.sessions.send(agentId, {
@@ -496,7 +506,7 @@ export class Router {
     room.leave(agentId);
 
     const session = this.sessions.get(agentId);
-    if (session) session.currentMeetingId = null;
+    this.sessions.clearMeeting(agentId);
 
     logger.info({ meetingId, agentId }, "Agent left meeting");
   }
@@ -959,6 +969,14 @@ export class Router {
   // --- Meeting lifecycle ---
 
   private handleMeetingEnd(meetingId: string): void {
+    // Clear meeting from all participant sessions — must happen before delete
+    const room = this.activeMeetings.get(meetingId);
+    if (room) {
+      for (const participantId of room.getParticipants()) {
+        this.sessions.clearMeeting(participantId);
+      }
+    }
+
     const despawned = this.spawner.despawnForMeeting(meetingId);
     if (despawned.length > 0) {
       logger.info({ meetingId, despawned }, "Despawned agents after meeting ended");
