@@ -792,7 +792,9 @@ describe("MeetingRoom", () => {
     await new Promise((r) => setTimeout(r, 200));
 
     // First all-pass round: phase should NOT advance
+    // Initiator is included in relevance rounds (may be an active LLM participant)
     sent = [];
+    room.recordRelevance(INITIATOR, "pass");
     room.recordRelevance(AGENT_A, "pass");
     room.recordRelevance(AGENT_B, "pass");
     // Wait for finalize + next round to start
@@ -801,6 +803,7 @@ describe("MeetingRoom", () => {
     expect(room.getPhase()).toBe("discuss");
 
     // Second all-pass round: phase SHOULD advance
+    room.recordRelevance(INITIATOR, "pass");
     room.recordRelevance(AGENT_A, "pass");
     room.recordRelevance(AGENT_B, "pass");
     await new Promise((r) => setTimeout(r, 200));

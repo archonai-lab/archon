@@ -57,16 +57,27 @@ let currentPhase = "";
 let isFirstInitiatorPhase = true;
 const meetingHistory: Array<{ role: string; content: string }> = [];
 
+const MAX_HISTORY_ENTRIES = 20;
+const MAX_ENTRY_CHARS = 800;
+const MAX_HISTORY_CHARS = 8000;
+
 function addToHistory(speaker: string, content: string) {
-  meetingHistory.push({ role: speaker, content });
-  if (meetingHistory.length > 20) meetingHistory.shift();
+  meetingHistory.push({ role: speaker, content: content.slice(0, MAX_ENTRY_CHARS) });
+  if (meetingHistory.length > MAX_HISTORY_ENTRIES) meetingHistory.shift();
 }
 
 function historyContext(): string {
   if (meetingHistory.length === 0) return "Meeting just started.";
-  return meetingHistory
-    .map((m) => `[${m.role}]: ${m.content}`)
-    .join("\n");
+  let total = 0;
+  const lines: string[] = [];
+  // Build from most recent to oldest, then reverse
+  for (let i = meetingHistory.length - 1; i >= 0; i--) {
+    const line = `[${meetingHistory[i].role}]: ${meetingHistory[i].content}`;
+    if (total + line.length > MAX_HISTORY_CHARS) break;
+    total += line.length;
+    lines.unshift(line);
+  }
+  return lines.join("\n");
 }
 
 // --- Load initiator identity ---
@@ -285,9 +296,9 @@ Then on a new line, briefly explain why (one sentence).`;
       const firstLine = response.split("\n")[0].toUpperCase().trim();
 
       let level: "must_speak" | "could_add" | "pass" = "could_add";
-      if (firstLine.includes("MUST_SPEAK")) level = "must_speak";
-      else if (firstLine.includes("PASS")) level = "pass";
-      else if (firstLine.includes("COULD_ADD")) level = "could_add";
+      if (/\bMUST_SPEAK\b/.test(firstLine)) level = "must_speak";
+      else if (/\bPASS\b/.test(firstLine)) level = "pass";
+      else if (/\bCOULD_ADD\b/.test(firstLine)) level = "could_add";
 
       console.log(`   [${initiatorId}] Relevance: ${level.toUpperCase()}`);
       ws.send(JSON.stringify({
@@ -361,8 +372,8 @@ As CEO, evaluate this proposal against the meeting goals and discussion. Vote: a
       const voteResp = await chat(votePrompt);
       const voteLine = voteResp.split("\n")[0].toLowerCase().trim();
       let voteChoice: "approve" | "reject" | "abstain" = "approve";
-      if (voteLine.includes("reject")) voteChoice = "reject";
-      else if (voteLine.includes("abstain")) voteChoice = "abstain";
+      if (/\breject\b/.test(voteLine)) voteChoice = "reject";
+      else if (/\babstain\b/.test(voteLine)) voteChoice = "abstain";
 
       const reason = voteResp.split("\n").slice(1).join(" ").trim() || undefined;
       console.log(`   [${initiatorId}] Vote: ${voteChoice.toUpperCase()}${reason ? ` — ${reason.slice(0, 80)}` : ""}`);

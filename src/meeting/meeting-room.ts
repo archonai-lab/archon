@@ -279,10 +279,12 @@ export class MeetingRoom {
     // Guard: don't start rounds on completed/cancelled meetings (e.g., from delayed setTimeout)
     if (this.status !== "active") return;
 
-    // Send relevance check to all joined participants (except initiator and last speaker)
-    // Initiator is the facilitator — they don't participate in relevance rounds
+    // Send relevance check to all joined participants (except the last speaker,
+    // who just spoke and doesn't need a relevance check for their own message).
+    // The initiator participates — they may be an active LLM participant or a
+    // passive script (which simply auto-passes).
     const checkTargets = [...this.joined].filter(
-      (id) => id !== this.initiatorId && id !== this.lastMessage?.agentId
+      (id) => id !== this.lastMessage?.agentId
     );
 
     if (checkTargets.length === 0) {
@@ -442,6 +444,7 @@ export class MeetingRoom {
     this.speakingQueue = [];
     this.consecutivePasses = 0;
     this.awaitingApproval = false;
+    this.lastMessage = null; // Reset so all participants get a fresh relevance check
 
     logger.info(
       { meetingId: this.id, from: prevPhase, to: this.phase, reason },
