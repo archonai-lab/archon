@@ -444,6 +444,7 @@ export class MeetingRoom {
     this.speakingQueue = [];
     this.consecutivePasses = 0;
     this.awaitingApproval = false;
+    this.lastMessage = null; // Reset so all participants get a fresh relevance check
 
     logger.info(
       { meetingId: this.id, from: prevPhase, to: this.phase, reason },
