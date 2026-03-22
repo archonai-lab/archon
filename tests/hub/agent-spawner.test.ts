@@ -18,6 +18,12 @@ vi.mock("../../src/db/connection.js", () => ({
         }),
       },
     },
+    // Chain: db.select().from().where() → returns human agents (empty for tests)
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    }),
   },
 }));
 
@@ -63,7 +69,15 @@ describe("AgentSpawner", () => {
     expect(spawner.isSpawned("bob")).toBe(true);
   });
 
-  it("skips excluded agents (ceo)", async () => {
+  it("skips human-type agents", async () => {
+    // Mock DB returning "ceo" as a human-type agent
+    const { db } = await import("../../src/db/connection.js");
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "ceo" }]),
+      }),
+    });
+
     const result = await spawner.spawnForMeeting(["ceo", "alice"], "m1");
     expect(result.spawned).toEqual(["alice"]);
     expect(result.failed).toEqual([]);

@@ -38,6 +38,8 @@ Archon CLI — Agent Management
 Usage:
   archon agent add <path> [path2...]  Register agent(s) from workspace directories
   archon agent list                   List all registered agents
+  archon user add <username>          Register a human user
+  archon user list                    List all registered users
 
 Options for 'agent add':
   --provider <provider>   LLM provider (default: cli-claude)
@@ -45,10 +47,15 @@ Options for 'agent add':
   --department <id>       Department ID to assign
   --role <id>             Role ID for department assignment
 
+Options for 'user add':
+  --display-name <name>   Display name (defaults to username)
+
 Examples:
   archon agent add ~/.archon/agents/sherlock
   archon agent add ./my-agent --provider openai --model gpt-4
   archon agent list
+  archon user add leviathanst --display-name "Leviathanst"
+  archon user list
 `);
 }
 
@@ -94,8 +101,16 @@ function parseIdentityFile(path: string): ParsedIdentity | null {
 // --- Commands ---
 
 async function agentAdd(): Promise<void> {
-  // Collect all positional paths (everything after "agent add" that isn't a flag)
-  const pathArgs = args.slice(2).filter((a) => !a.startsWith("--"));
+  // Collect all positional paths (everything after "agent add" that isn't a flag or flag value)
+  const remaining = args.slice(2);
+  const pathArgs: string[] = [];
+  for (let i = 0; i < remaining.length; i++) {
+    if (remaining[i].startsWith("--")) {
+      i++; // skip flag value
+      continue;
+    }
+    pathArgs.push(remaining[i]);
+  }
   if (pathArgs.length === 0) {
     console.error("Error: Missing <path> argument(s)");
     console.error("Usage: archon agent add <path> [path2] [path3] ...");
@@ -195,7 +210,14 @@ async function addSingleAgent(pathArg: string): Promise<void> {
     return;
   }
 
-  // 9. Insert into database + generate card in a transaction
+  // 9. Determine agent type
+  const agentType = getFlag("--type", "agent") as "agent" | "human";
+  if (!["agent", "human"].includes(agentType)) {
+    console.error(`Error: Invalid type "${agentType}" — must be "agent" or "human"`);
+    return;
+  }
+
+  // 10. Insert into database + generate card in a transaction
   try {
     await db.transaction(async (tx) => {
       const [agent] = await tx
@@ -204,6 +226,7 @@ async function addSingleAgent(pathArg: string): Promise<void> {
           id: name,
           displayName,
           workspacePath,
+          type: agentType,
           modelConfig,
         })
         .returning();
@@ -220,11 +243,14 @@ async function addSingleAgent(pathArg: string): Promise<void> {
       // Generate agent card (writes to same DB within transaction)
       await generateAgentCard(name);
 
-      console.log(`✓ Agent registered`);
+      console.log(`✓ ${agentType === "human" ? "Human user" : "Agent"} registered`);
       console.log(`  ID:        ${agent.id}`);
       console.log(`  Name:      ${agent.displayName}`);
+      console.log(`  Type:      ${agentType}`);
       console.log(`  Workspace: ${agent.workspacePath}`);
-      console.log(`  Provider:  ${provider}${model ? ` (${model})` : ""}`);
+      if (agentType === "agent") {
+        console.log(`  Provider:  ${provider}${model ? ` (${model})` : ""}`);
+      }
     });
   } catch (err) {
     console.error(`Error: Failed to register agent "${pathArg}" — ${String(err)}`);
@@ -235,6 +261,7 @@ async function agentList(): Promise<void> {
   const allAgents = await db.select({
     id: agents.id,
     displayName: agents.displayName,
+    type: agents.type,
     status: agents.status,
     workspacePath: agents.workspacePath,
     ephemeral: agents.ephemeral,
@@ -267,10 +294,11 @@ async function agentList(): Promise<void> {
   console.log(
     padRight("ID", 20) +
     padRight("Display Name", 20) +
+    padRight("Type", 8) +
     padRight("Status", 14) +
     padRight("Departments", 30)
   );
-  console.log("─".repeat(84));
+  console.log("─".repeat(92));
 
   for (const agent of allAgents) {
     const depts = deptMap.get(agent.id)?.join(", ") ?? "—";
@@ -278,6 +306,7 @@ async function agentList(): Promise<void> {
     console.log(
       padRight(agent.id, 20) +
       padRight(agent.displayName, 20) +
+      padRight(agent.type, 8) +
       padRight(status, 14) +
       padRight(depts, 30)
     );

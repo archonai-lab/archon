@@ -42,16 +42,22 @@ export class AgentSpawner {
   private hubUrl: string;
   private callbacks: AgentSpawnerCallbacks;
 
-  /** Agent IDs that should never be auto-spawned (e.g., human-controlled agents). */
-  private excludeIds = new Set<string>(["ceo"]);
+  /** Agent IDs that should never be auto-spawned (populated from DB on spawn). */
+  private excludeIds = new Set<string>();
 
   constructor(hubUrl = "ws://127.0.0.1:9500", callbacks: AgentSpawnerCallbacks = {}) {
     this.hubUrl = hubUrl;
     this.callbacks = callbacks;
   }
 
-  /** Spawn agent processes for a meeting. Returns both successes and failures. */
+  /** Spawn agent processes for a meeting. Skips human-type agents. */
   async spawnForMeeting(agentIds: string[], meetingId: string): Promise<SpawnResult> {
+    // Load human agents from DB so we never try to spawn them
+    const humanAgents = await db.select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.type, "human"));
+    for (const h of humanAgents) this.excludeIds.add(h.id);
+
     const result: SpawnResult = { spawned: [], failed: [] };
 
     for (const agentId of agentIds) {

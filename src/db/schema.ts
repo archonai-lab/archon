@@ -42,6 +42,10 @@ export const agents = pgTable("agents", {
   id: text("id").primaryKey(),
   displayName: text("display_name").notNull(),
   workspacePath: text("workspace_path").notNull(),
+  /** "agent" = AI (spawnable), "human" = human user (never spawned). */
+  type: text("type", { enum: ["agent", "human"] })
+    .notNull()
+    .default("agent"),
   status: text("status", { enum: ["active", "deactivated"] })
     .notNull()
     .default("active"),

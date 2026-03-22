@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ADD COLUMN "type" text DEFAULT 'agent' NOT NULL;
