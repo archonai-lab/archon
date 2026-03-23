@@ -52,7 +52,8 @@ export class AgentSpawner {
 
   /** Spawn agent processes for a meeting. Skips human-type agents. */
   async spawnForMeeting(agentIds: string[], meetingId: string): Promise<SpawnResult> {
-    // Load human agents from DB so we never try to spawn them
+    // Never spawn human-type agents or the CEO (facilitator, already connected)
+    this.excludeIds.add("ceo");
     const humanAgents = await db.select({ id: agents.id })
       .from(agents)
       .where(eq(agents.type, "human"));

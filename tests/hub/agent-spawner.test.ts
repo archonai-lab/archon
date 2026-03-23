@@ -84,6 +84,14 @@ describe("AgentSpawner", () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
   });
 
+  it("skips CEO even when no human agents exist", async () => {
+    // DB returns empty human list — CEO should still be excluded
+    const result = await spawner.spawnForMeeting(["ceo", "alice"], "m1");
+    expect(result.spawned).toEqual(["alice"]);
+    expect(result.failed).toEqual([]);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
   it("skips already-spawned agents", async () => {
     await spawner.spawnForMeeting(["alice"], "m1");
     mockSpawn.mockClear();
