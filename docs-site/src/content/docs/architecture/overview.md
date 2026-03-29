@@ -19,6 +19,10 @@ You (CEO) ──WebSocket──→ Hub Server
               Agent Spawner (spawns LLM processes for meetings)
                            │
               scripts/agent.ts (LLM + WebSocket client)
+                           │
+              archon-agent MCP server (per-agent, stdio)
+                           │
+              nmem-mcp child process (neural memory)
 ```
 
 ## Layers
@@ -51,11 +55,27 @@ State machine for a single meeting. Manages phases, turn-taking, proposals, voti
 
 Spawned as a child process for each agent. Loads identity files (SOUL.md, IDENTITY.md, PLAYBOOK.md) into a system prompt, connects to the hub via WebSocket, and uses an LLM to generate responses to meeting events.
 
-### 6. Protocol (`src/protocol/messages.ts`)
+### 6. archon-agent MCP Server (`src/mcp/server.ts`)
+
+Each agent runs its own `archon-agent` MCP server instance (stdio transport). It exposes tools the agent's LLM can call:
+
+- **`identity_load`** — reads SOUL.md and IDENTITY.md from the agent's workspace
+- **`context_get`**, **`meeting_join`**, **`status_report`** — stubs, not yet implemented
+- All neural memory tools forwarded from nmem-mcp (see below)
+
+The server starts by calling `connect()` on the neural memory bridge. If nmem-mcp fails to spawn, the server exits immediately — an agent without memory is broken, not degraded.
+
+### 7. Neural Memory Bridge (`src/mcp/bridge.ts`)
+
+Spawns `nmem-mcp` (from the `neural-memory` package) as a child process via `uvx`. Connects using `StdioClientTransport`, performs a health check via `listTools()`, then registers every discovered tool on the MCP server as a passthrough. Tool calls are forwarded verbatim — no filtering, no transformation.
+
+Fail-fast: if spawn or health check fails, `connect()` throws, and the agent process exits.
+
+### 8. Protocol (`src/protocol/messages.ts`)
 
 Zod schemas for every message type. The `InboundMessage` discriminated union is the single source of truth — if a message type isn't in the union, the hub rejects it.
 
-### 7. Database (`src/db/schema.ts`)
+### 9. Database (`src/db/schema.ts`)
 
 Drizzle ORM schema with 9 tables. See [Database Schema](/architecture/database/) for details.
 
@@ -72,6 +92,7 @@ archon/
 │   ├── agent/            # AgentClient library
 │   ├── db/               # Schema, connection, seed
 │   ├── hub/              # Server, Router, SessionManager, Spawner
+│   ├── mcp/              # archon-agent MCP server, neural memory bridge, tool stubs
 │   ├── meeting/          # MeetingRoom, methodology parser, relevance, turns
 │   ├── protocol/         # Zod message schemas, error codes
 │   ├── registry/         # Agent CRUD, agent cards, discovery

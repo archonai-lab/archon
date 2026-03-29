@@ -29,6 +29,9 @@ Thumbs.db
 # Runtime data (lives in ~/.archon/, not in repo)
 data/
 
+# Neural Memory runtime state
+.neuralmemory/
+
 # Drizzle artifacts
 drizzle/meta/
 

@@ -140,20 +140,31 @@ function runCli(command: string, args: string[], stdin?: string): Promise<string
   });
 }
 
+let claudeSessionStarted = false;
+
 async function chatViaClaude(userMessage: string): Promise<string> {
-  const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
-  // Pass prompt via stdin to avoid OS ARG_MAX limit on large prompts
-  // SECURITY: --dangerously-skip-permissions is dev-only. In production,
-  // use scoped permissions or remove this flag entirely.
+  // First call: send system prompt + message, starts a session
+  // Subsequent calls: --continue resumes the session (agent remembers context)
   const args = [
     "--print",
-    "--no-session-persistence",
     ...(process.env.NODE_ENV === "production" ? [] : ["--dangerously-skip-permissions"]),
   ];
   if (config.model) {
     args.push("--model", config.model);
   }
-  return runCli("claude", args, fullPrompt);
+
+  let prompt: string;
+  if (!claudeSessionStarted) {
+    // First turn: send identity + message
+    prompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+    claudeSessionStarted = true;
+  } else {
+    // Subsequent turns: --continue resumes context, only send the new message
+    args.push("--continue");
+    prompt = userMessage;
+  }
+
+  return runCli("claude", args, prompt);
 }
 
 async function chatViaGemini(userMessage: string): Promise<string> {

@@ -3,6 +3,10 @@
     "neural-memory": {
       "command": "uvx",
       "args": ["--from", "neural-memory", "nmem-mcp"]
+    },
+    "archon-lens": {
+      "command": "npx",
+      "args": ["tsx", "/home/leviathanst/archon-lens/src/index.ts"]
     }
   }
 }
