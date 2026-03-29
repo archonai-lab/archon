@@ -4,6 +4,14 @@
  * When a meeting is created, the hub spawns agent processes for each invitee
  * that isn't already connected. Agents are killed when the meeting completes
  * or is cancelled. Agents are ephemeral — spawned on demand, despawned when done.
+ *
+ * Runner selection (env var ARCHON_RUNNER_PATH):
+ *   - When set: spawns the archon-agent runner at that path.
+ *     Command: npx tsx <ARCHON_RUNNER_PATH> --agent <id> --meeting <id> --hub <url> --provider <p>
+ *     Default value for this env var (for reference):
+ *       /home/leviathanst/archon-agent/scripts/runner.ts
+ *   - When unset: falls back to the legacy scripts/agent.ts runner (backwards compatible).
+ *     Command: npx tsx scripts/agent.ts --id <id> --provider <p> --hub <url>
  */
 
 import { spawn, type ChildProcess } from "child_process";
@@ -133,16 +141,43 @@ export class AgentSpawner {
     const config = (agent.modelConfig as ModelConfig) ?? {};
     const provider = config.provider ?? "openai";
 
-    const scriptPath = resolve(process.cwd(), "scripts/agent.ts");
-    const args = [
-      scriptPath,
-      "--id", agentId,
-      "--provider", provider,
-      "--hub", this.hubUrl,
-    ];
+    // Determine which runner to use.
+    // ARCHON_RUNNER_PATH: path to archon-agent runner script.
+    //   Set to use the new archon-agent runner (e.g. /home/leviathanst/archon-agent/scripts/runner.ts).
+    //   Unset to fall back to the legacy scripts/agent.ts runner.
+    const archonRunnerPath = process.env.ARCHON_RUNNER_PATH;
 
-    if (config.model) args.push("--model", config.model);
-    if (config.baseUrl) args.push("--base-url", config.baseUrl);
+    let args: string[];
+    if (archonRunnerPath) {
+      // archon-agent runner: uses --agent / --meeting / --hub / --provider
+      args = [
+        archonRunnerPath,
+        "--agent", agentId,
+        "--meeting", meetingId,
+        "--hub", this.hubUrl,
+        "--provider", provider,
+      ];
+      if (config.model) args.push("--model", config.model);
+      logger.info(
+        { agentId, runner: "archon-agent", runnerPath: archonRunnerPath },
+        "Spawning with archon-agent runner"
+      );
+    } else {
+      // Legacy runner: uses --id / --provider / --hub
+      const scriptPath = resolve(process.cwd(), "scripts/agent.ts");
+      args = [
+        scriptPath,
+        "--id", agentId,
+        "--provider", provider,
+        "--hub", this.hubUrl,
+      ];
+      if (config.model) args.push("--model", config.model);
+      if (config.baseUrl) args.push("--base-url", config.baseUrl);
+      logger.info(
+        { agentId, runner: "legacy", scriptPath },
+        "Spawning with legacy agent runner (set ARCHON_RUNNER_PATH to use archon-agent runner)"
+      );
+    }
 
     try {
       // Use tsx from node_modules/.bin
