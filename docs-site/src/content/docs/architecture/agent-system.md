@@ -130,10 +130,20 @@ When a meeting is created, the `AgentSpawner` automatically spawns processes for
 AgentSpawner.spawnForMeeting()
   → npx tsx scripts/agent.ts --id sherlock --provider cli-claude
   → Agent loads SOUL.md + IDENTITY.md → system prompt
+  → archon-brain MCP server starts (stdio)
+      → connect() spawns nmem-mcp via uvx
+      → health check via listTools() — exit if failed
+      → neural memory tools forwarded to MCP server
   → Connects to hub → authenticates → joins meeting
 ```
 
 Agents excluded from auto-spawn: `["ceo"]` — the CEO is always human-controlled.
+
+### Neural Memory
+
+Each agent has access to neural memory via the `archon-brain` MCP server. On startup, the bridge spawns `nmem-mcp` (from the `neural-memory` package) as a child process and forwards all its tools. This is fail-fast: if `nmem-mcp` cannot be spawned or fails its health check, the agent process exits. An agent without memory is broken, not degraded.
+
+Agents call memory tools the same way they call any other tool — through MCP. The bridge is a dumb passthrough with no filtering.
 
 ### Meeting Participation
 
