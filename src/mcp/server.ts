@@ -13,7 +13,7 @@ if (!agentId) {
 }
 
 const server = new McpServer({
-  name: 'archon-brain',
+  name: 'archon-agent',
   version: '0.1.0',
 });
 
@@ -70,6 +70,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('archon-brain failed to start:', err);
+  console.error('archon-agent failed to start:', err);
   process.exit(1);
 });

@@ -22,7 +22,7 @@ export async function connect(server: McpServer): Promise<void> {
   });
 
   _client = new Client(
-    { name: 'archon-brain', version: '0.1.0' },
+    { name: 'archon-agent', version: '0.1.0' },
     { capabilities: {} },
   );
 

@@ -59,7 +59,7 @@ describe("neural memory bridge", () => {
         stderr: "inherit",
       });
       expect(mocks.MockClient).toHaveBeenCalledWith(
-        { name: "archon-brain", version: "0.1.0" },
+        { name: "archon-agent", version: "0.1.0" },
         { capabilities: {} },
       );
       expect(mocks.mockConnect).toHaveBeenCalledTimes(1);

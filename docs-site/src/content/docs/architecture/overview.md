@@ -20,7 +20,7 @@ You (CEO) ──WebSocket──→ Hub Server
                            │
               scripts/agent.ts (LLM + WebSocket client)
                            │
-              archon-brain MCP server (per-agent, stdio)
+              archon-agent MCP server (per-agent, stdio)
                            │
               nmem-mcp child process (neural memory)
 ```
@@ -55,9 +55,9 @@ State machine for a single meeting. Manages phases, turn-taking, proposals, voti
 
 Spawned as a child process for each agent. Loads identity files (SOUL.md, IDENTITY.md, PLAYBOOK.md) into a system prompt, connects to the hub via WebSocket, and uses an LLM to generate responses to meeting events.
 
-### 6. archon-brain MCP Server (`src/mcp/server.ts`)
+### 6. archon-agent MCP Server (`src/mcp/server.ts`)
 
-Each agent runs its own `archon-brain` MCP server instance (stdio transport). It exposes tools the agent's LLM can call:
+Each agent runs its own `archon-agent` MCP server instance (stdio transport). It exposes tools the agent's LLM can call:
 
 - **`identity_load`** — reads SOUL.md and IDENTITY.md from the agent's workspace
 - **`context_get`**, **`meeting_join`**, **`status_report`** — stubs, not yet implemented
@@ -92,7 +92,7 @@ archon/
 │   ├── agent/            # AgentClient library
 │   ├── db/               # Schema, connection, seed
 │   ├── hub/              # Server, Router, SessionManager, Spawner
-│   ├── mcp/              # archon-brain MCP server, neural memory bridge, tool stubs
+│   ├── mcp/              # archon-agent MCP server, neural memory bridge, tool stubs
 │   ├── meeting/          # MeetingRoom, methodology parser, relevance, turns
 │   ├── protocol/         # Zod message schemas, error codes
 │   ├── registry/         # Agent CRUD, agent cards, discovery

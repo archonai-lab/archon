@@ -38,6 +38,6 @@
     "vitest": "^3.0.0"
   },
   "bin": {
-    "archon-brain": "./dist/mcp/server.js"
+    "archon-agent": "./dist/mcp/server.js"
   }
 }
