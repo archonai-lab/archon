@@ -433,9 +433,17 @@ export class Router {
     logger.info({ meetingId: room.id, initiator: agentId, participants: room.getParticipants() }, "Meeting created");
 
     // Auto-spawn agent processes for invitees that aren't already connected
-    const toSpawn = room.getParticipants().filter(
-      (id) => id !== agentId && !this.sessions.isOnline(id)
-    );
+    const allInvitees = room.getParticipants().filter((id) => id !== agentId);
+    const toSpawn = allInvitees.filter((id) => !this.sessions.isOnline(id));
+    const alreadyOnline = allInvitees.filter((id) => this.sessions.isOnline(id));
+
+    if (alreadyOnline.length > 0) {
+      logger.info(
+        { meetingId: room.id, alreadyOnline },
+        "Skipping spawn for agents already connected"
+      );
+    }
+
     if (toSpawn.length > 0) {
       const result = await this.spawner.spawnForMeeting(toSpawn, room.id);
       if (result.spawned.length > 0) {
@@ -454,6 +462,11 @@ export class Router {
           failures: result.failed,
         });
       }
+    } else {
+      logger.info(
+        { meetingId: room.id, allInvitees },
+        "No agents to spawn — all invitees already online"
+      );
     }
   }
 
