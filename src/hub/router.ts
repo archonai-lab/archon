@@ -966,6 +966,10 @@ export class Router {
   // --- Agent process lifecycle ---
 
   private handleAgentProcessExit(agentId: string, code: number | null, signal: string | null): void {
+    // Always remove the session — the WS close event may not fire synchronously
+    // after process exit, leaving isOnline() returning true for a dead agent.
+    this.sessions.remove(agentId);
+
     // Normal exit (code 0 or SIGINT from despawn) — don't notify
     if (code === 0 || signal === "SIGINT") return;
 
