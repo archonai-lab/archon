@@ -128,14 +128,27 @@ function runCli(command: string, cliArgs: string[], stdin?: string): Promise<str
 }
 
 async function chatViaClaude(userMessage: string): Promise<string> {
-  const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
-  const cliArgs = [
-    "--print",
-    "--no-session-persistence",
-    ...(process.env.NODE_ENV === "production" ? [] : ["--dangerously-skip-permissions"]),
-  ];
-  if (model) cliArgs.push("--model", model);
-  return runCli("claude", cliArgs, fullPrompt);
+  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+  const fullPrompt = `${systemPrompt}
+
+---
+
+${userMessage}`;
+
+  const options: Record<string, unknown> = {
+    settingSources: [],
+    permissionMode: "bypassPermissions",
+  };
+  if (model) options.model = model;
+
+  let result = "";
+  for await (const msg of query({ prompt: fullPrompt, options: options as any })) {
+    if ("result" in msg) {
+      result = (msg as { result: string }).result;
+    }
+  }
+
+  return result || "(no response)";
 }
 
 async function chatViaGemini(userMessage: string): Promise<string> {
