@@ -76,6 +76,8 @@ export class MeetingRoom {
   private currentSpeaker: string | null = null;
   private consecutivePasses = 0;
   private lastMessage: { agentId: string; content: string } | null = null;
+  private joinTimer: ReturnType<typeof setTimeout> | null = null;
+  private phaseStarted = false;
 
   private send: SendFn;
   private onEnd?: (meetingId: string) => void;
@@ -189,9 +191,33 @@ export class MeetingRoom {
       .then(() => {})
       .catch((e) => logger.error({ error: e }, "Failed to update participant join"));
 
-    // If all participants joined, notify phase
+    // Start meeting as soon as the first participant joins, with a grace period
+    // for remaining participants. If all join before the timer fires, start immediately.
+    // CALIBRATION: 30s grace window for slow-starting agents
+    const JOIN_GRACE_MS = 30_000;
     if (this.joined.size === this.participants.size) {
-      this.broadcastPhaseChange();
+      // All joined — start immediately, cancel pending timer
+      if (this.joinTimer) {
+        clearTimeout(this.joinTimer);
+        this.joinTimer = null;
+      }
+      if (!this.phaseStarted) {
+        this.phaseStarted = true;
+        this.broadcastPhaseChange();
+      }
+    } else if (!this.joinTimer && !this.phaseStarted) {
+      // First join — start grace period timer
+      this.joinTimer = setTimeout(() => {
+        this.joinTimer = null;
+        if (!this.phaseStarted) {
+          this.phaseStarted = true;
+          logger.warn(
+            { meetingId: this.id, joined: this.joined.size, expected: this.participants.size },
+            "Join timeout — starting meeting with partial participants"
+          );
+          this.broadcastPhaseChange();
+        }
+      }, JOIN_GRACE_MS);
     }
 
     return true;
