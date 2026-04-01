@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { WebSocket } from "ws";
 import { eq } from "drizzle-orm";
 import { HubServer } from "../../src/hub/server.js";
 import { db, closeConnection } from "../../src/db/connection.js";
 import { agents } from "../../src/db/schema.js";
+import { logger } from "../../src/utils/logger.js";
 
 const TEST_PORT = 9599;
 const WS_URL = `ws://localhost:${TEST_PORT}`;
@@ -95,9 +96,10 @@ describe("HubServer", () => {
         token: "nonexistent",
       });
 
-      expect(reply).toMatchObject({
+      expect(reply).toEqual({
         type: "error",
         code: "AUTH_FAILED",
+        message: "Authentication failed",
       });
 
       const closeCode = await closePromise;
@@ -116,9 +118,10 @@ describe("HubServer", () => {
         token: "wrong-token",
       });
 
-      expect(reply).toMatchObject({
+      expect(reply).toEqual({
         type: "error",
         code: "AUTH_FAILED",
+        message: "Authentication failed",
       });
 
       const closeCode = await closePromise;
@@ -129,9 +132,10 @@ describe("HubServer", () => {
       const ws = await connect();
       const reply = await sendAndReceive(ws, { type: "ping" });
 
-      expect(reply).toMatchObject({
+      expect(reply).toEqual({
         type: "error",
         code: "AUTH_REQUIRED",
+        message: "Authentication required",
       });
     });
   });
@@ -178,9 +182,10 @@ describe("HubServer", () => {
       ws.send("not json{{{");
       const result = await reply;
 
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         type: "error",
         code: "INVALID_MESSAGE",
+        message: "Invalid message format",
       });
     });
 
@@ -193,9 +198,10 @@ describe("HubServer", () => {
       });
 
       const reply = await sendAndReceive(ws, { type: "faketype" });
-      expect(reply).toMatchObject({
+      expect(reply).toEqual({
         type: "error",
         code: "INVALID_MESSAGE",
+        message: "Invalid message format",
       });
     });
   });

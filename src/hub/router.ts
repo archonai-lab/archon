@@ -35,8 +35,9 @@ export class Router {
     try {
       data = JSON.parse(raw);
     } catch {
+      logger.warn("Received unparseable JSON from unauthenticated socket");
       socket.send(
-        JSON.stringify(createError(ErrorCode.INVALID_MESSAGE, "Invalid JSON"))
+        JSON.stringify(createError(ErrorCode.INVALID_MESSAGE))
       );
       return;
     }
@@ -51,12 +52,16 @@ export class Router {
     // Parse as known inbound message
     const parsed = InboundMessage.safeParse(data);
     if (!parsed.success) {
+      logger.debug(
+        {
+          agentId,
+          zodIssues: parsed.error.issues.map(({ path, code, message }) => ({ path, code, message })),
+        },
+        "Inbound message failed schema validation"
+      );
       this.sessions.send(
         agentId,
-        createError(
-          ErrorCode.INVALID_MESSAGE,
-          `Invalid message: ${parsed.error.issues[0]?.message ?? "unknown"}`
-        )
+        createError(ErrorCode.INVALID_MESSAGE)
       );
       return;
     }
@@ -219,9 +224,10 @@ export class Router {
         break;
 
       default:
+        logger.warn({ agentId, type: (message as { type?: unknown }).type }, "Received unknown message type");
         this.sessions.send(
           agentId,
-          createError(ErrorCode.UNKNOWN_TYPE, `Unhandled message type: ${(message as { type: string }).type}`)
+          createError(ErrorCode.UNKNOWN_TYPE)
         );
     }
   }
@@ -231,9 +237,13 @@ export class Router {
   private async handleAuth(socket: WebSocket, data: unknown): Promise<void> {
     const parsed = AuthMessage.safeParse(data);
     if (!parsed.success) {
+      logger.debug(
+        { zodIssues: parsed.error.issues.map(({ path, code, message }) => ({ path, code, message })) },
+        "Auth message failed schema validation"
+      );
       socket.send(
         JSON.stringify(
-          createError(ErrorCode.AUTH_REQUIRED, "First message must be auth")
+          createError(ErrorCode.AUTH_REQUIRED)
         )
       );
       return;
@@ -246,9 +256,10 @@ export class Router {
     });
 
     if (!agent) {
+      logger.warn({ agentId }, "Auth failed — agent not found");
       socket.send(
         JSON.stringify(
-          createError(ErrorCode.AUTH_FAILED, `Agent "${agentId}" not found`)
+          createError(ErrorCode.AUTH_FAILED)
         )
       );
       socket.close(4001, "Authentication failed");
@@ -258,8 +269,9 @@ export class Router {
     // SECURITY: token=agentId is a placeholder — no real authentication.
     // TODO: Replace with HMAC-signed or JWT tokens before production traffic.
     if (token !== agentId) {
+      logger.warn({ agentId }, "Auth failed — token mismatch");
       socket.send(
-        JSON.stringify(createError(ErrorCode.AUTH_FAILED, "Invalid token"))
+        JSON.stringify(createError(ErrorCode.AUTH_FAILED))
       );
       socket.close(4001, "Authentication failed");
       return;
@@ -267,11 +279,9 @@ export class Router {
 
     const addResult = this.sessions.add(agentId, socket);
     if (!addResult.ok) {
+      logger.warn({ agentId }, "Auth rejected — agent already has an active session");
       socket.send(
-        JSON.stringify(createError(
-          ErrorCode.ALREADY_IN_MEETING,
-          `Agent "${agentId}" is already in meeting ${addResult.meetingId}. Disconnect from the current session first.`
-        ))
+        JSON.stringify(createError(ErrorCode.ALREADY_IN_MEETING))
       );
       socket.close(4002, "Already in meeting");
       return;
@@ -363,9 +373,10 @@ export class Router {
   ): Promise<void> {
     const card = await getAgentCard(targetAgentId);
     if (!card) {
+      logger.warn({ agentId: requestingAgentId, targetAgentId }, "Agent not found");
       this.sessions.send(
         requestingAgentId,
-        createError(ErrorCode.AGENT_NOT_FOUND, `Agent "${targetAgentId}" not found`)
+        createError(ErrorCode.AGENT_NOT_FOUND)
       );
       return;
     }
@@ -388,9 +399,10 @@ export class Router {
         ? await loadMethodology(msg.methodology)
         : getDefaultMethodology();
     } catch (err) {
+      logger.warn({ agentId, methodology: msg.methodology, err }, "Failed to load meeting methodology");
       this.sessions.send(
         agentId,
-        createError(ErrorCode.INVALID_MESSAGE, `Failed to load methodology "${msg.methodology}": ${(err as Error).message}`)
+        createError(ErrorCode.INVALID_MESSAGE)
       );
       return;
     }
@@ -479,7 +491,8 @@ export class Router {
       const { canManageAgents } = await import("../registry/agent-crud.js");
       const isAdmin = await canManageAgents(agentId);
       if (!isAdmin) {
-        this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Cannot join meeting — not a participant"));
+        logger.warn({ agentId, meetingId, reason: "non-admin join attempt on uninvited meeting" }, "Permission denied");
+        this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
         return;
       }
       // Add as participant and persist
@@ -493,7 +506,8 @@ export class Router {
 
     const ok = room.join(agentId);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Cannot join meeting"));
+      logger.warn({ agentId, meetingId, reason: "room.join() rejected" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -530,7 +544,8 @@ export class Router {
 
     const ok = await room.speak(agentId, content);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot speak now"));
+      logger.debug({ agentId, meetingId }, "Speak rejected — not agent's turn");
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN));
     }
   }
 
@@ -547,7 +562,8 @@ export class Router {
 
     const ok = await room.advance(agentId);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only initiator can advance"));
+      logger.warn({ agentId, meetingId, reason: "non-initiator advance attempt" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
     }
   }
 
@@ -557,7 +573,8 @@ export class Router {
 
     const ok = await room.propose(agentId, proposal);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot propose now"));
+      logger.debug({ agentId, meetingId }, "Propose rejected — not agent's turn");
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN));
     }
   }
 
@@ -573,7 +590,8 @@ export class Router {
 
     const ok = await room.vote(agentId, proposalIndex, vote, reason);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot vote now"));
+      logger.debug({ agentId, meetingId, proposalIndex }, "Vote rejected — not agent's turn");
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN));
     }
   }
 
@@ -589,7 +607,8 @@ export class Router {
 
     const ok = await room.assignTask(agentId, task, assigneeId, deadline);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot assign now"));
+      logger.debug({ agentId, meetingId, assigneeId }, "Assign rejected — not agent's turn");
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN));
     }
   }
 
@@ -599,7 +618,8 @@ export class Router {
 
     const ok = await room.acknowledge(agentId, taskIndex);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN, "Cannot acknowledge now"));
+      logger.debug({ agentId, meetingId, taskIndex }, "Acknowledge rejected — not agent's turn");
+      this.sessions.send(agentId, createError(ErrorCode.NOT_YOUR_TURN));
     }
   }
 
@@ -609,7 +629,8 @@ export class Router {
 
     const ok = await room.approve(agentId);
     if (!ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Cannot approve: not initiator or not awaiting approval"));
+      logger.warn({ agentId, meetingId, reason: "non-initiator approve attempt" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
     }
   }
 
@@ -629,7 +650,8 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, reason: "agent.create permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -653,7 +675,8 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, targetAgentId: msg.agentId, reason: "agent.update permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -669,7 +692,8 @@ export class Router {
     const result = await deleteAgentFull(requesterId, targetAgentId);
 
     if (!result.ok) {
-      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId: requesterId, targetAgentId, reason: "agent.delete permission denied" }, "Permission denied");
+      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -692,7 +716,8 @@ export class Router {
     const result = await reactivateAgentFull(requesterId, targetAgentId);
 
     if (!result.ok) {
-      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId: requesterId, targetAgentId, reason: "agent.reactivate permission denied" }, "Permission denied");
+      this.sessions.send(requesterId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -714,7 +739,8 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, targetAgentId: msg.agentId, reason: "agent.enrich permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -742,7 +768,8 @@ export class Router {
   ): Promise<void> {
     const result = await createDepartmentFull(agentId, msg.name, msg.description);
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, reason: "department.create permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -765,7 +792,8 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, departmentId: msg.departmentId, reason: "department.update permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -776,7 +804,8 @@ export class Router {
   private async handleDepartmentDelete(agentId: string, departmentId: string): Promise<void> {
     const result = await deleteDepartmentFull(agentId, departmentId);
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, departmentId, reason: "department.delete permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -800,7 +829,8 @@ export class Router {
   ): Promise<void> {
     const result = await createRoleFull(agentId, msg.departmentId, msg.name, msg.permissions);
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, departmentId: msg.departmentId, reason: "role.create permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -822,7 +852,8 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, roleId: msg.roleId, reason: "role.update permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -832,7 +863,8 @@ export class Router {
   private async handleRoleDelete(agentId: string, roleId: string): Promise<void> {
     const result = await deleteRoleFull(agentId, roleId);
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      logger.warn({ agentId, roleId, reason: "role.delete permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -860,7 +892,8 @@ export class Router {
   private async handleMeetingTranscript(agentId: string, meetingId: string): Promise<void> {
     const result = await getMeetingTranscript(meetingId);
     if (!result) {
-      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND, `Meeting "${meetingId}" not found`));
+      logger.warn({ agentId, meetingId }, "Meeting transcript not found");
+      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND));
       return;
     }
 
@@ -876,7 +909,8 @@ export class Router {
 
     // Only initiator can cancel
     if (room.initiatorId !== agentId) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only the meeting initiator can cancel"));
+      logger.warn({ agentId, meetingId, initiatorId: room.initiatorId, reason: "non-initiator cancel attempt" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -889,7 +923,8 @@ export class Router {
     const { canManageAgents } = await import("../registry/agent-crud.js");
     const isAdmin = await canManageAgents(agentId);
     if (!isAdmin) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only admins can read hub config"));
+      logger.warn({ agentId, reason: "config.get permission denied — non-admin" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
@@ -903,18 +938,21 @@ export class Router {
     const { canManageAgents } = await import("../registry/agent-crud.js");
     const isAdmin = await canManageAgents(agentId);
     if (!isAdmin) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, "Only admins can update hub config"));
+      logger.warn({ agentId, reason: "config.set permission denied — non-admin" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
     if ((Router.RESTRICTED_CONFIG_KEYS as readonly string[]).includes(key)) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, `Config key "${key}" can only be set via environment variables`));
+      logger.warn({ agentId, key, reason: "config.set attempt on restricted config key" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
       return;
     }
 
     const error = setLLMConfig(key, value);
     if (error) {
-      this.sessions.send(agentId, createError(ErrorCode.INVALID_MESSAGE, error));
+      logger.warn({ agentId, key, error }, "config.set rejected — invalid config value");
+      this.sessions.send(agentId, createError(ErrorCode.INVALID_MESSAGE));
       return;
     }
 
@@ -975,11 +1013,7 @@ export class Router {
 
     // Unexpected crash — notify all connected clients
     logger.warn({ agentId, code, signal }, "Agent process crashed");
-    this.sessions.broadcast({
-      type: "agent.process_error",
-      agentId,
-      reason: code !== null ? `Process exited with code ${code}` : `Process killed by ${signal}`,
-    });
+    this.sessions.broadcast(createError("AGENT_PROCESS_ERROR"));
     this.broadcastDirectoryUpdated();
   }
 
@@ -1036,7 +1070,8 @@ export class Router {
   private getMeetingOrError(agentId: string, meetingId: string): MeetingRoom | null {
     const room = this.activeMeetings.get(meetingId);
     if (!room) {
-      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND, `Meeting "${meetingId}" not found`));
+      logger.warn({ agentId, meetingId }, "Meeting not found");
+      this.sessions.send(agentId, createError(ErrorCode.MEETING_NOT_FOUND));
       return null;
     }
     return room;

@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { SessionManager } from "./session.js";
 import { Router } from "./router.js";
+import { createError } from "../protocol/errors.js";
 import { logger } from "../utils/logger.js";
 
 export class HubServer {
@@ -19,13 +20,7 @@ export class HubServer {
           await this.router.handleRaw(socket, raw.toString());
         } catch (error) {
           logger.error({ error }, "Unhandled error in message handler");
-          socket.send(
-            JSON.stringify({
-              type: "error",
-              code: "INTERNAL_ERROR",
-              message: "Internal server error",
-            })
-          );
+          socket.send(JSON.stringify(createError("INTERNAL_ERROR")));
         }
       });
 

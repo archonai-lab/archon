@@ -201,15 +201,20 @@ Read or update hub configuration. Admin only. Security-sensitive keys (`llmApiKe
 
 ## Error Codes
 
-| Code | Meaning |
-|------|---------|
-| `AUTH_REQUIRED` | First message must be auth |
-| `AUTH_FAILED` | Invalid credentials |
-| `INVALID_MESSAGE` | Malformed or invalid message |
-| `UNKNOWN_TYPE` | Unrecognized message type |
-| `AGENT_NOT_FOUND` | Agent doesn't exist |
-| `PERMISSION_DENIED` | Insufficient permissions |
-| `MEETING_NOT_FOUND` | Meeting doesn't exist |
-| `NOT_IN_MEETING` | Agent not in this meeting |
-| `NOT_YOUR_TURN` | Not your turn to speak |
-| `INTERNAL_ERROR` | Server error |
+Error responses use a fixed set of codes with static messages. The hub never includes dynamic details (field names, agent IDs, schema errors) in client-facing error messages — diagnostic context is logged server-side only.
+
+| Code | Message | Meaning |
+|------|---------|---------|
+| `AUTH_REQUIRED` | Authentication required | First message must be auth |
+| `AUTH_FAILED` | Authentication failed | Invalid credentials |
+| `INVALID_MESSAGE` | Invalid message format | Malformed or invalid message |
+| `UNKNOWN_TYPE` | Unsupported message type | Unrecognized message type |
+| `AGENT_NOT_FOUND` | Agent not found | Agent doesn't exist |
+| `PERMISSION_DENIED` | Permission denied | Insufficient permissions |
+| `MEETING_NOT_FOUND` | Meeting not found | Meeting doesn't exist |
+| `MEETING_FULL` | Meeting is full | Meeting has reached capacity |
+| `NOT_IN_MEETING` | Not in a meeting | Agent not in this meeting |
+| `NOT_YOUR_TURN` | Action not available in current phase | Not your turn to speak |
+| `ALREADY_IN_MEETING` | Already in a meeting | Agent already has an active session |
+| `INTERNAL_ERROR` | Internal error | Server error |
+| `AGENT_PROCESS_ERROR` | Agent process terminated unexpectedly | Spawned agent process crashed |
