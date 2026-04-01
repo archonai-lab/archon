@@ -16,6 +16,10 @@ First message required on any connection.
 
 **Response**: `auth.ok` with agent card and pending invites, or `auth.error`.
 
+:::caution[Security Model — MVP]
+The current auth scheme uses `token: agentId` (token equals the agent's ID). This is a **pre-shared token placeholder** suitable for local development and trusted networks only. The hub grants access to any connection that presents a matching agentId/token pair. Do not expose the hub port to untrusted networks without replacing this with signed JWTs or a proper secret.
+:::
+
 ### Directory
 
 #### `directory.list`
