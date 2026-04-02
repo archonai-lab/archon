@@ -250,3 +250,75 @@ describe("HubServer", () => {
     });
   });
 });
+
+  describe("heartbeat — zombie socket eviction", () => {
+    it("should evict a session when the socket does not respond to ping", async () => {
+      const ws = await connect();
+      await sendAndReceive(ws, {
+        type: "auth",
+        agentId: "test-agent",
+        token: "test-agent",
+      });
+
+      const sessions = hub.getSessionManager();
+      expect(sessions.isOnline("test-agent")).toBe(true);
+
+      // Simulate the socket going silent: mark isAlive = false as the
+      // previous heartbeat cycle would have done, then tick again without
+      // a pong arriving in between.
+      const session = sessions.get("test-agent")!;
+      session.isAlive = false;
+
+      // Tick the heartbeat — no pong was received, so the session should be evicted
+      hub.tickHeartbeat();
+
+      // Allow the terminate() → close event to propagate
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(sessions.isOnline("test-agent")).toBe(false);
+      expect(sessions.get("test-agent")).toBeUndefined();
+    });
+
+    it("should keep a session alive when the socket responds to ping", async () => {
+      const ws = await connect();
+      await sendAndReceive(ws, {
+        type: "auth",
+        agentId: "test-agent",
+        token: "test-agent",
+      });
+
+      const sessions = hub.getSessionManager();
+
+      // First tick: session.isAlive is true (freshly connected), so no eviction.
+      // The tick marks isAlive = false and sends a ping.
+      hub.tickHeartbeat();
+
+      // Wait for the ws client to auto-respond with a pong, which sets isAlive = true
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Second tick: isAlive should be true (pong was received), so no eviction.
+      hub.tickHeartbeat();
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(sessions.isOnline("test-agent")).toBe(true);
+    });
+
+    it("isOnline should return false for a session with a non-OPEN socket", async () => {
+      const ws = await connect();
+      await sendAndReceive(ws, {
+        type: "auth",
+        agentId: "test-agent",
+        token: "test-agent",
+      });
+
+      const sessions = hub.getSessionManager();
+      expect(sessions.isOnline("test-agent")).toBe(true);
+
+      // Close the socket from the client side — TCP close propagates
+      ws.close();
+      await new Promise((r) => setTimeout(r, 200));
+
+      // After close event fires, session is removed entirely
+      expect(sessions.isOnline("test-agent")).toBe(false);
+    });
+  });

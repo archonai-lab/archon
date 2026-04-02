@@ -6,6 +6,12 @@ export interface AgentSession {
   socket: WebSocket;
   connectedAt: Date;
   currentMeetingId: string | null;
+  /**
+   * Heartbeat liveness flag. Set to true when a pong is received.
+   * Reset to false before each ping. If still false when the next ping
+   * fires, the socket is treated as a zombie and evicted.
+   */
+  isAlive: boolean;
 }
 
 export type AddSessionResult =
@@ -51,6 +57,7 @@ export class SessionManager {
       socket,
       connectedAt: new Date(),
       currentMeetingId: null,
+      isAlive: true,
     };
 
     this.sessions.set(agentId, session);
@@ -91,8 +98,15 @@ export class SessionManager {
     return Array.from(this.sessions.keys());
   }
 
+  /**
+   * Returns true only if the agent has a session AND the socket is OPEN.
+   * A session in the map with a non-OPEN socket is a zombie that hasn't
+   * been evicted by the heartbeat yet — treat it as offline.
+   */
   isOnline(agentId: string): boolean {
-    return this.sessions.has(agentId);
+    const session = this.sessions.get(agentId);
+    if (!session) return false;
+    return session.socket.readyState === session.socket.OPEN;
   }
 
   send(agentId: string, message: unknown): boolean {
