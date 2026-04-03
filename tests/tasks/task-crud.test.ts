@@ -1,0 +1,289 @@
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { eq } from "drizzle-orm";
+import { db, closeConnection } from "../../src/db/connection.js";
+import { agents, permissions, tasks } from "../../src/db/schema.js";
+import {
+  createTask,
+  listTasks,
+  getTask,
+  updateTask,
+  isValidTransition,
+} from "../../src/tasks/task-crud.js";
+import { grantPermission } from "../../src/hub/permissions.js";
+
+const CEO_AGENT = "task-test-ceo";
+const REGULAR_AGENT = "task-test-agent";
+const OTHER_AGENT = "task-test-other";
+
+beforeAll(async () => {
+  await db.insert(agents).values([
+    { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
+    { id: REGULAR_AGENT, displayName: "Task Test Agent", workspacePath: "/tmp/task-test-agent" },
+    { id: OTHER_AGENT, displayName: "Task Test Other", workspacePath: "/tmp/task-test-other" },
+  ]).onConflictDoNothing();
+
+  await grantPermission(CEO_AGENT, "task:*", "admin");
+});
+
+afterAll(async () => {
+  // Clean up in FK-safe order
+  await db.delete(tasks).where(eq(tasks.assignedBy, CEO_AGENT));
+  await db.delete(permissions).where(eq(permissions.agentId, CEO_AGENT));
+  await db.delete(agents).where(eq(agents.id, CEO_AGENT));
+  await db.delete(agents).where(eq(agents.id, REGULAR_AGENT));
+  await db.delete(agents).where(eq(agents.id, OTHER_AGENT));
+  await closeConnection();
+});
+
+// --- Status transition validation ---
+
+describe("isValidTransition", () => {
+  it("allows pending → in_progress", () => {
+    expect(isValidTransition("pending", "in_progress")).toBe(true);
+  });
+
+  it("allows in_progress → done", () => {
+    expect(isValidTransition("in_progress", "done")).toBe(true);
+  });
+
+  it("allows in_progress → failed", () => {
+    expect(isValidTransition("in_progress", "failed")).toBe(true);
+  });
+
+  it("rejects pending → done (skip in_progress)", () => {
+    expect(isValidTransition("pending", "done")).toBe(false);
+  });
+
+  it("rejects pending → failed (skip in_progress)", () => {
+    expect(isValidTransition("pending", "failed")).toBe(false);
+  });
+
+  it("rejects done → in_progress (backwards)", () => {
+    expect(isValidTransition("done", "in_progress")).toBe(false);
+  });
+
+  it("rejects failed → in_progress (backwards)", () => {
+    expect(isValidTransition("failed", "in_progress")).toBe(false);
+  });
+
+  it("rejects in_progress → pending (backwards)", () => {
+    expect(isValidTransition("in_progress", "pending")).toBe(false);
+  });
+});
+
+// --- Schema: task creation ---
+
+describe("createTask", () => {
+  it("CEO can create a task with all fields", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Write tests",
+      description: "Cover all edge cases",
+      assignedTo: REGULAR_AGENT,
+      meetingId: "meeting-42",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.task.title).toBe("Write tests");
+    expect(result.task.description).toBe("Cover all edge cases");
+    expect(result.task.assignedTo).toBe(REGULAR_AGENT);
+    expect(result.task.assignedBy).toBe(CEO_AGENT);
+    expect(result.task.meetingId).toBe("meeting-42");
+    expect(result.task.status).toBe("pending");
+    expect(result.task.version).toBe(1);
+    expect(result.task.id).toBeTruthy();
+    expect(result.task.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("non-CEO agent cannot create a task", async () => {
+    const result = await createTask(REGULAR_AGENT, { title: "Sneak task" });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/permission denied/i);
+  });
+
+  it("returns error when assignedTo agent does not exist", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Ghost task",
+      assignedTo: "nonexistent-agent",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/not found/i);
+  });
+});
+
+// --- Auth: task visibility ---
+
+describe("listTasks", () => {
+  it("CEO sees all tasks", async () => {
+    // Create two tasks: one for REGULAR_AGENT, one for OTHER_AGENT
+    await createTask(CEO_AGENT, { title: "For regular", assignedTo: REGULAR_AGENT });
+    await createTask(CEO_AGENT, { title: "For other", assignedTo: OTHER_AGENT });
+
+    const result = await listTasks(CEO_AGENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const titles = result.tasks.map((t) => t.title);
+    expect(titles).toContain("For regular");
+    expect(titles).toContain("For other");
+  });
+
+  it("agent sees only their own tasks", async () => {
+    const result = await listTasks(REGULAR_AGENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    for (const task of result.tasks) {
+      expect(task.assignedTo).toBe(REGULAR_AGENT);
+    }
+  });
+});
+
+// --- Auth: get ---
+
+describe("getTask", () => {
+  it("agent can get their own task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Agent's task",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await getTask(REGULAR_AGENT, created.task.id);
+    expect(result.ok).toBe(true);
+  });
+
+  it("agent cannot get another agent's task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Other agent's task",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await getTask(REGULAR_AGENT, created.task.id);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/permission denied/i);
+  });
+
+  it("CEO can get any task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Any task",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await getTask(CEO_AGENT, created.task.id);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// --- Auth: update ---
+
+describe("updateTask", () => {
+  it("agent can update status on their own task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Task for agent to update",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+      status: "in_progress",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("in_progress");
+    expect(result.task.version).toBe(2);
+    expect(result.task.changedBy).toBe(REGULAR_AGENT);
+  });
+
+  it("agent cannot update another agent's task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Other agent's task — no touch",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+      status: "in_progress",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/permission denied/i);
+  });
+
+  it("CEO can update any task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "CEO override task",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await updateTask(CEO_AGENT, created.task.id, {
+      status: "in_progress",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.task.status).toBe("in_progress");
+  });
+
+  it("rejects invalid status transition", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Invalid transition task",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    // pending → done is invalid (must go through in_progress)
+    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+      status: "done",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/invalid status transition/i);
+  });
+
+  it("agent can set result when marking done", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Task with result",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    // First move to in_progress
+    const inProgress = await updateTask(REGULAR_AGENT, created.task.id, {
+      status: "in_progress",
+    });
+    expect(inProgress.ok).toBe(true);
+
+    // Then mark done with result
+    const done = await updateTask(REGULAR_AGENT, created.task.id, {
+      status: "done",
+      result: "Analysis complete. Found 3 issues.",
+    });
+
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.task.status).toBe("done");
+    expect(done.task.result).toBe("Analysis complete. Found 3 issues.");
+    expect(done.task.version).toBe(3);
+  });
+});
