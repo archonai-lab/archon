@@ -9,6 +9,20 @@ import { randomUUID } from "node:crypto";
 
 export type TaskStatus = "pending" | "in_progress" | "done" | "failed";
 export type Task = typeof tasks.$inferSelect;
+export type TaskErrorCode = "CLIENT" | "SERVER";
+
+export interface TaskOk<T> {
+  ok: true;
+  data: T;
+}
+
+export interface TaskErr {
+  ok: false;
+  code: TaskErrorCode;
+  error: string;
+}
+
+export type TaskResult<T> = TaskOk<T> | TaskErr;
 
 export interface CreateTaskOpts {
   title: string;
@@ -20,6 +34,23 @@ export interface CreateTaskOpts {
 export interface UpdateTaskOpts {
   status?: TaskStatus;
   result?: string;
+}
+
+export interface ListTaskOpts {
+  // CALIBRATION: 50 default covers typical team workload without unbounded growth.
+  // CEO sees ~5 agents × ~10 active tasks each = ~50. Increase if team scales beyond 10 agents.
+  limit?: number;
+  offset?: number;
+}
+
+// --- Helpers ---
+
+function clientErr(error: string): TaskErr {
+  return { ok: false, code: "CLIENT", error };
+}
+
+function serverErr(error: string): TaskErr {
+  return { ok: false, code: "SERVER", error };
 }
 
 // --- Auth helpers ---
@@ -43,13 +74,16 @@ export function isValidTransition(from: TaskStatus, to: TaskStatus): boolean {
 
 // --- CRUD ---
 
+// CALIBRATION: 50 default page size — see ListTaskOpts comment for reasoning
+const DEFAULT_PAGE_LIMIT = 50;
+
 export async function createTask(
   requesterId: string,
   opts: CreateTaskOpts
-): Promise<{ ok: true; task: Task } | { ok: false; error: string }> {
+): Promise<TaskResult<Task>> {
   const allowed = await canManageTasks(requesterId);
   if (!allowed) {
-    return { ok: false, error: "Permission denied: only CEO/admin can create tasks" };
+    return clientErr("Permission denied: only CEO/admin can create tasks");
   }
 
   if (opts.assignedTo) {
@@ -57,7 +91,7 @@ export async function createTask(
       where: eq(agents.id, opts.assignedTo),
     });
     if (!agent) {
-      return { ok: false, error: `Agent "${opts.assignedTo}" not found` };
+      return clientErr(`Agent "${opts.assignedTo}" not found`);
     }
   }
 
@@ -78,77 +112,86 @@ export async function createTask(
 
   const task = await db.query.tasks.findFirst({ where: eq(tasks.id, id) });
   if (!task) {
-    return { ok: false, error: "Failed to retrieve created task" };
+    return serverErr("Failed to retrieve created task");
   }
 
   logger.info({ taskId: id, requesterId }, "Task created");
-  return { ok: true, task };
+  return { ok: true, data: task };
 }
 
 export async function listTasks(
-  requesterId: string
-): Promise<{ ok: true; tasks: Task[] } | { ok: false; error: string }> {
+  requesterId: string,
+  opts: ListTaskOpts = {}
+): Promise<TaskResult<{ tasks: Task[]; total: number }>> {
+  const limit = opts.limit ?? DEFAULT_PAGE_LIMIT;
+  const offset = opts.offset ?? 0;
   const isCeo = await canManageTasks(requesterId);
 
-  let result: Task[];
-  if (isCeo) {
-    result = await db.query.tasks.findMany();
-  } else {
-    result = await db.query.tasks.findMany({
-      where: eq(tasks.assignedTo, requesterId),
-    });
-  }
+  const whereClause = isCeo ? undefined : eq(tasks.assignedTo, requesterId);
 
-  return { ok: true, tasks: result };
+  const [result, countResult] = await Promise.all([
+    db.query.tasks.findMany({
+      where: whereClause,
+      limit,
+      offset,
+      orderBy: (tasks, { desc }) => [desc(tasks.updatedAt)],
+    }),
+    db.query.tasks.findMany({ where: whereClause }),
+  ]);
+
+  return { ok: true, data: { tasks: result, total: countResult.length } };
 }
 
 export async function getTask(
   requesterId: string,
   taskId: string
-): Promise<{ ok: true; task: Task } | { ok: false; error: string }> {
+): Promise<TaskResult<Task>> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
   });
 
   if (!task) {
-    return { ok: false, error: `Task "${taskId}" not found` };
+    return clientErr(`Task "${taskId}" not found`);
   }
 
   const isCeo = await canManageTasks(requesterId);
   if (!isCeo && task.assignedTo !== requesterId) {
-    return { ok: false, error: "Permission denied: task is not assigned to you" };
+    return clientErr("Permission denied: task is not assigned to you");
   }
 
-  return { ok: true, task };
+  return { ok: true, data: task };
 }
 
 export async function updateTask(
   requesterId: string,
   taskId: string,
   opts: UpdateTaskOpts
-): Promise<{ ok: true; task: Task } | { ok: false; error: string }> {
+): Promise<TaskResult<Task>> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
   });
 
   if (!task) {
-    return { ok: false, error: `Task "${taskId}" not found` };
+    return clientErr(`Task "${taskId}" not found`);
   }
 
   const isCeo = await canManageTasks(requesterId);
 
   // Zero-trust: agents can only update their own tasks
   if (!isCeo && task.assignedTo !== requesterId) {
-    return { ok: false, error: "Permission denied: you can only update tasks assigned to you" };
+    return clientErr("Permission denied: you can only update tasks assigned to you");
+  }
+
+  const currentStatus = task.status as TaskStatus;
+
+  // Terminal states are immutable — no status changes, no result overwrites
+  if (currentStatus === "done" || currentStatus === "failed") {
+    return clientErr(`Task is in terminal state "${currentStatus}" and cannot be modified`);
   }
 
   if (opts.status !== undefined) {
-    const currentStatus = task.status as TaskStatus;
     if (!isValidTransition(currentStatus, opts.status)) {
-      return {
-        ok: false,
-        error: `Invalid status transition: ${currentStatus} → ${opts.status}`,
-      };
+      return clientErr(`Invalid status transition: ${currentStatus} → ${opts.status}`);
     }
   }
 
@@ -166,9 +209,9 @@ export async function updateTask(
 
   const updated = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
   if (!updated) {
-    return { ok: false, error: "Failed to retrieve updated task" };
+    return serverErr("Failed to retrieve updated task");
   }
 
   logger.info({ taskId, requesterId, newStatus: opts.status }, "Task updated");
-  return { ok: true, task: updated };
+  return { ok: true, data: updated };
 }

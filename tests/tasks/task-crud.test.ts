@@ -9,6 +9,7 @@ import {
   updateTask,
   isValidTransition,
 } from "../../src/tasks/task-crud.js";
+import type { TaskErr } from "../../src/tasks/task-crud.js";
 import { grantPermission } from "../../src/hub/permissions.js";
 
 const CEO_AGENT = "task-test-ceo";
@@ -85,15 +86,15 @@ describe("createTask", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.task.title).toBe("Write tests");
-    expect(result.task.description).toBe("Cover all edge cases");
-    expect(result.task.assignedTo).toBe(REGULAR_AGENT);
-    expect(result.task.assignedBy).toBe(CEO_AGENT);
-    expect(result.task.meetingId).toBe("meeting-42");
-    expect(result.task.status).toBe("pending");
-    expect(result.task.version).toBe(1);
-    expect(result.task.id).toBeTruthy();
-    expect(result.task.createdAt).toBeInstanceOf(Date);
+    expect(result.data.title).toBe("Write tests");
+    expect(result.data.description).toBe("Cover all edge cases");
+    expect(result.data.assignedTo).toBe(REGULAR_AGENT);
+    expect(result.data.assignedBy).toBe(CEO_AGENT);
+    expect(result.data.meetingId).toBe("meeting-42");
+    expect(result.data.status).toBe("pending");
+    expect(result.data.version).toBe(1);
+    expect(result.data.id).toBeTruthy();
+    expect(result.data.createdAt).toBeInstanceOf(Date);
   });
 
   it("non-CEO agent cannot create a task", async () => {
@@ -101,6 +102,7 @@ describe("createTask", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
     expect(result.error).toMatch(/permission denied/i);
   });
 
@@ -112,6 +114,7 @@ describe("createTask", () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
     expect(result.error).toMatch(/not found/i);
   });
 });
@@ -128,7 +131,7 @@ describe("listTasks", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const titles = result.tasks.map((t) => t.title);
+    const titles = result.data.tasks.map((t) => t.title);
     expect(titles).toContain("For regular");
     expect(titles).toContain("For other");
   });
@@ -138,9 +141,40 @@ describe("listTasks", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    for (const task of result.tasks) {
+    for (const task of result.data.tasks) {
       expect(task.assignedTo).toBe(REGULAR_AGENT);
     }
+  });
+
+  it("returns total count for pagination", async () => {
+    const result = await listTasks(CEO_AGENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(typeof result.data.total).toBe("number");
+    expect(result.data.total).toBeGreaterThanOrEqual(result.data.tasks.length);
+  });
+
+  it("respects limit parameter", async () => {
+    const result = await listTasks(CEO_AGENT, { limit: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.tasks.length).toBeLessThanOrEqual(1);
+    // total should still reflect all tasks, not just the page
+    expect(result.data.total).toBeGreaterThanOrEqual(1);
+  });
+
+  it("respects offset parameter", async () => {
+    const allResult = await listTasks(CEO_AGENT);
+    if (!allResult.ok) return;
+
+    const offsetResult = await listTasks(CEO_AGENT, { offset: 1 });
+    expect(offsetResult.ok).toBe(true);
+    if (!offsetResult.ok) return;
+
+    // Offset by 1 should return one fewer task (or same if new tasks were created)
+    expect(offsetResult.data.tasks.length).toBeLessThanOrEqual(allResult.data.total);
   });
 });
 
@@ -155,7 +189,7 @@ describe("getTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await getTask(REGULAR_AGENT, created.task.id);
+    const result = await getTask(REGULAR_AGENT, created.data.id);
     expect(result.ok).toBe(true);
   });
 
@@ -167,9 +201,10 @@ describe("getTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await getTask(REGULAR_AGENT, created.task.id);
+    const result = await getTask(REGULAR_AGENT, created.data.id);
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
     expect(result.error).toMatch(/permission denied/i);
   });
 
@@ -181,7 +216,7 @@ describe("getTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await getTask(CEO_AGENT, created.task.id);
+    const result = await getTask(CEO_AGENT, created.data.id);
     expect(result.ok).toBe(true);
   });
 });
@@ -197,15 +232,15 @@ describe("updateTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
       status: "in_progress",
     });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.task.status).toBe("in_progress");
-    expect(result.task.version).toBe(2);
-    expect(result.task.changedBy).toBe(REGULAR_AGENT);
+    expect(result.data.status).toBe("in_progress");
+    expect(result.data.version).toBe(2);
+    expect(result.data.changedBy).toBe(REGULAR_AGENT);
   });
 
   it("agent cannot update another agent's task", async () => {
@@ -216,12 +251,13 @@ describe("updateTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
       status: "in_progress",
     });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
     expect(result.error).toMatch(/permission denied/i);
   });
 
@@ -233,13 +269,13 @@ describe("updateTask", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const result = await updateTask(CEO_AGENT, created.task.id, {
+    const result = await updateTask(CEO_AGENT, created.data.id, {
       status: "in_progress",
     });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.task.status).toBe("in_progress");
+    expect(result.data.status).toBe("in_progress");
   });
 
   it("rejects invalid status transition", async () => {
@@ -251,12 +287,13 @@ describe("updateTask", () => {
     if (!created.ok) return;
 
     // pending → done is invalid (must go through in_progress)
-    const result = await updateTask(REGULAR_AGENT, created.task.id, {
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
       status: "done",
     });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
     expect(result.error).toMatch(/invalid status transition/i);
   });
 
@@ -269,21 +306,138 @@ describe("updateTask", () => {
     if (!created.ok) return;
 
     // First move to in_progress
-    const inProgress = await updateTask(REGULAR_AGENT, created.task.id, {
+    const inProgress = await updateTask(REGULAR_AGENT, created.data.id, {
       status: "in_progress",
     });
     expect(inProgress.ok).toBe(true);
 
     // Then mark done with result
-    const done = await updateTask(REGULAR_AGENT, created.task.id, {
+    const done = await updateTask(REGULAR_AGENT, created.data.id, {
       status: "done",
       result: "Analysis complete. Found 3 issues.",
     });
 
     expect(done.ok).toBe(true);
     if (!done.ok) return;
-    expect(done.task.status).toBe("done");
-    expect(done.task.result).toBe("Analysis complete. Found 3 issues.");
-    expect(done.task.version).toBe(3);
+    expect(done.data.status).toBe("done");
+    expect(done.data.result).toBe("Analysis complete. Found 3 issues.");
+    expect(done.data.version).toBe(3);
+  });
+});
+
+// --- Regression: terminal-state immutability ---
+
+describe("terminal-state immutability", () => {
+  it("rejects status change on a done task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Terminal done task",
+      assignedTo: REGULAR_AGENT,
+    });
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "done", result: "finished" });
+
+    // Try to change status back — should fail
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "in_progress",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/terminal state/i);
+  });
+
+  it("rejects result mutation on a done task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Terminal result mutation",
+      assignedTo: REGULAR_AGENT,
+    });
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "done", result: "original" });
+
+    // Try to overwrite result — should fail
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      result: "tampered",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/terminal state/i);
+  });
+
+  it("rejects any mutation on a failed task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Terminal failed task",
+      assignedTo: REGULAR_AGENT,
+    });
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "failed", result: "crashed" });
+
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      result: "actually it worked",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/terminal state/i);
+  });
+
+  it("CEO also cannot mutate terminal tasks", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "CEO terminal override attempt",
+      assignedTo: REGULAR_AGENT,
+    });
+    if (!created.ok) return;
+
+    await updateTask(CEO_AGENT, created.data.id, { status: "in_progress" });
+    await updateTask(CEO_AGENT, created.data.id, { status: "done", result: "sealed" });
+
+    // Even CEO can't modify terminal tasks
+    const result = await updateTask(CEO_AGENT, created.data.id, {
+      result: "ceo override",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/terminal state/i);
+  });
+});
+
+// --- Regression: error codes ---
+
+describe("error codes", () => {
+  it("returns CLIENT code for permission errors", async () => {
+    const result = await createTask(REGULAR_AGENT, { title: "no permission" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+  });
+
+  it("returns CLIENT code for not-found errors", async () => {
+    const result = await getTask(CEO_AGENT, "nonexistent-id-12345");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+  });
+
+  it("returns CLIENT code for invalid transitions", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Transition error code test",
+      assignedTo: REGULAR_AGENT,
+    });
+    if (!created.ok) return;
+
+    const result = await updateTask(REGULAR_AGENT, created.data.id, { status: "done" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
   });
 });

@@ -1057,28 +1057,30 @@ export class Router {
     });
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, result.error));
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.created', task: result.task });
+    this.sessions.send(agentId, { type: 'task.created', task: result.data });
   }
 
   private async handleTaskList(agentId: string): Promise<void> {
     const result = await listTasks(agentId);
     if (!result.ok) return;
-    this.sessions.send(agentId, { type: 'task.list.result', tasks: result.tasks });
+    this.sessions.send(agentId, { type: 'task.list.result', tasks: result.data.tasks, total: result.data.total });
   }
 
   private async handleTaskGet(agentId: string, taskId: string): Promise<void> {
     const result = await getTask(agentId, taskId);
 
     if (!result.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, result.error));
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, result.error));
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.get.result', task: result.task });
+    this.sessions.send(agentId, { type: 'task.get.result', task: result.data });
   }
 
   private async handleTaskUpdate(
@@ -1091,11 +1093,12 @@ export class Router {
     });
 
     if (!updateResult.ok) {
-      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED, updateResult.error));
+      const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, updateResult.error));
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.updated', task: updateResult.task });
+    this.sessions.send(agentId, { type: 'task.updated', task: updateResult.data });
   }
 
   // --- Broadcast helpers ---
