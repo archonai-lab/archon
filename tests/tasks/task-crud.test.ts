@@ -13,6 +13,7 @@ import type { TaskErr } from "../../src/tasks/task-crud.js";
 import { grantPermission } from "../../src/hub/permissions.js";
 
 const CEO_AGENT = "task-test-ceo";
+const LEVIA_AGENT = "levia";
 const REGULAR_AGENT = "task-test-agent";
 const OTHER_AGENT = "task-test-other";
 
@@ -128,6 +129,16 @@ describe("listTasks", () => {
     await createTask(CEO_AGENT, { title: "For other", assignedTo: OTHER_AGENT });
 
     const result = await listTasks(CEO_AGENT);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const titles = result.data.tasks.map((t) => t.title);
+    expect(titles).toContain("For regular");
+    expect(titles).toContain("For other");
+  });
+
+  it("levia sees all tasks via temporary global board allowlist", async () => {
+    const result = await listTasks(LEVIA_AGENT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 

@@ -31,6 +31,7 @@ interface SpawnedAgent {
   agentId: string;
   process: ChildProcess;
   meetingIds: Set<string>;
+  taskIds: Set<string>;
   spawnedAt: Date;
 }
 
@@ -71,7 +72,7 @@ export class AgentSpawner {
         continue;
       }
 
-      const spawnResult = await this.spawn(agentId, meetingId);
+      const spawnResult = await this.spawn(agentId, { meetingId });
       if (spawnResult.ok) {
         result.spawned.push(agentId);
       } else {
@@ -82,6 +83,21 @@ export class AgentSpawner {
     return result;
   }
 
+  /** Spawn a long-lived worker process for a task if the agent is offline. */
+  async spawnForTask(agentId: string, taskId: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (this.excludeIds.has(agentId)) {
+      return { ok: false, reason: `Agent "${agentId}" is excluded from auto-spawn` };
+    }
+
+    const existing = this.spawned.get(agentId);
+    if (existing) {
+      existing.taskIds.add(taskId);
+      return { ok: true };
+    }
+
+    return this.spawn(agentId, { taskId });
+  }
+
   /** Despawn agents that were only in this meeting. Agents in multiple meetings stay alive. */
   despawnForMeeting(meetingId: string): string[] {
     const despawned: string[] = [];
@@ -89,7 +105,23 @@ export class AgentSpawner {
     for (const [agentId, entry] of this.spawned) {
       entry.meetingIds.delete(meetingId);
 
-      if (entry.meetingIds.size === 0) {
+      if (entry.meetingIds.size === 0 && entry.taskIds.size === 0) {
+        this.kill(agentId);
+        despawned.push(agentId);
+      }
+    }
+
+    return despawned;
+  }
+
+  /** Despawn agents that were only kept alive for this task. */
+  despawnForTask(taskId: string): string[] {
+    const despawned: string[] = [];
+
+    for (const [agentId, entry] of this.spawned) {
+      entry.taskIds.delete(taskId);
+
+      if (entry.meetingIds.size === 0 && entry.taskIds.size === 0) {
         this.kill(agentId);
         despawned.push(agentId);
       }
@@ -117,7 +149,7 @@ export class AgentSpawner {
 
   private async spawn(
     agentId: string,
-    meetingId: string
+    context: { meetingId?: string; taskId?: string }
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     // Look up model config from DB
     const agent = await db.query.agents.findFirst({
@@ -138,7 +170,7 @@ export class AgentSpawner {
     }
 
     const config = (agent.modelConfig as ModelConfig) ?? {};
-    const provider = config.provider ?? "openai";
+    const provider = config.provider ?? "cli-codex";
 
     // Determine which runner to use.
     // ARCHON_RUNNER_PATH: path to archon-agent runner script.
@@ -148,21 +180,30 @@ export class AgentSpawner {
 
     let args: string[];
     if (archonRunnerPath) {
-      // archon-agent runner: uses --agent / --meeting / --hub / --provider
       args = [
         archonRunnerPath,
         "--agent", agentId,
-        "--meeting", meetingId,
         "--hub", this.hubUrl,
         "--provider", provider,
+        "--lifetime", "long",
       ];
+      if (context.meetingId) {
+        args.push("--meeting", context.meetingId);
+      }
       if (config.model) args.push("--model", config.model);
       logger.info(
-        { agentId, runner: "archon-agent", runnerPath: archonRunnerPath },
+        { agentId, runner: "archon-agent", runnerPath: archonRunnerPath, meetingId: context.meetingId, taskId: context.taskId },
         "Spawning with archon-agent runner"
       );
     } else {
-      // Legacy runner: uses --id / --provider / --hub
+      if (!context.meetingId) {
+        return {
+          ok: false,
+          reason: "Task auto-spawn requires ARCHON_RUNNER_PATH to point to the archon-agent runner",
+        };
+      }
+      // Legacy runner: uses --id / --provider / --hub.
+      // It is intentionally minimal and does not provide MCP memory/tool wiring.
       const scriptPath = resolve(process.cwd(), "scripts/agent.ts");
       args = [
         scriptPath,
@@ -174,7 +215,7 @@ export class AgentSpawner {
       if (config.baseUrl) args.push("--base-url", config.baseUrl);
       logger.info(
         { agentId, runner: "legacy", scriptPath },
-        "Spawning with legacy agent runner (set ARCHON_RUNNER_PATH to use archon-agent runner)"
+        "Spawning with legacy stateless runner (set ARCHON_RUNNER_PATH to use archon-agent runner for MCP tools and memory)"
       );
     }
 
@@ -203,7 +244,8 @@ export class AgentSpawner {
       const entry: SpawnedAgent = {
         agentId,
         process: proc,
-        meetingIds: new Set([meetingId]),
+        meetingIds: new Set(context.meetingId ? [context.meetingId] : []),
+        taskIds: new Set(context.taskId ? [context.taskId] : []),
         spawnedAt: new Date(),
       };
 
@@ -234,7 +276,7 @@ export class AgentSpawner {
         this.callbacks.onProcessExit?.(agentId, 1, null);
       });
 
-      logger.info({ agentId, provider, meetingId, pid: proc.pid }, "Agent process spawned");
+      logger.info({ agentId, provider, meetingId: context.meetingId, taskId: context.taskId, pid: proc.pid }, "Agent process spawned");
       return { ok: true };
     } catch (err) {
       const reason = (err as Error).message;

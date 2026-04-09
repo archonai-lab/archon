@@ -59,6 +59,15 @@ export async function canManageTasks(agentId: string): Promise<boolean> {
   return hasPermission(agentId, "task:*", "admin");
 }
 
+const GLOBAL_TASK_BOARD_ALLOWLIST = new Set(["ceo", "levia"]);
+
+async function canViewAllTasks(agentId: string): Promise<boolean> {
+  if (await canManageTasks(agentId)) return true;
+  // Temporary bridge until real role-based task board visibility exists.
+  // Keep this allowlist narrow and remove it once human/admin board access is modeled explicitly.
+  return GLOBAL_TASK_BOARD_ALLOWLIST.has(agentId);
+}
+
 // --- Status transition enforcement ---
 
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
@@ -125,9 +134,9 @@ export async function listTasks(
 ): Promise<TaskResult<{ tasks: Task[]; total: number }>> {
   const limit = opts.limit ?? DEFAULT_PAGE_LIMIT;
   const offset = opts.offset ?? 0;
-  const isCeo = await canManageTasks(requesterId);
+  const canSeeAll = await canViewAllTasks(requesterId);
 
-  const whereClause = isCeo ? undefined : eq(tasks.assignedTo, requesterId);
+  const whereClause = canSeeAll ? undefined : eq(tasks.assignedTo, requesterId);
 
   const [result, countResult] = await Promise.all([
     db.query.tasks.findMany({

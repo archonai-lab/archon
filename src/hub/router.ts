@@ -1002,9 +1002,39 @@ export class Router {
 
   // --- Meeting lifecycle ---
 
-  private handleMeetingEnd(meetingId: string): void {
+  private async handleMeetingEnd(meetingId: string): Promise<void> {
     // Clear meeting from all participant sessions — must happen before delete
     const room = this.activeMeetings.get(meetingId);
+    if (room) {
+      for (const item of room.getActionItems()) {
+        const created = await createTask(room.initiatorId, {
+          title: item.task,
+          assignedTo: item.assigneeId,
+          meetingId,
+        });
+
+        if (!created.ok) {
+          logger.warn(
+            { meetingId, task: item.task, assigneeId: item.assigneeId, error: created.error },
+            "Failed to create task from meeting action item",
+          );
+          continue;
+        }
+
+        this.emitTaskCreated(created.data, room.initiatorId);
+
+        if (created.data.assignedTo && (this.spawner.isSpawned(created.data.assignedTo) || !this.sessions.isOnline(created.data.assignedTo))) {
+          const spawnResult = await this.spawner.spawnForTask(created.data.assignedTo, created.data.id);
+          if (!spawnResult.ok) {
+            logger.warn(
+              { taskId: created.data.id, assignedTo: created.data.assignedTo, reason: spawnResult.reason },
+              "Failed to auto-spawn task worker from meeting action item",
+            );
+          }
+        }
+      }
+    }
+
     if (room) {
       for (const participantId of room.getParticipants()) {
         this.sessions.clearMeeting(participantId);
@@ -1062,7 +1092,22 @@ export class Router {
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.created', task: result.data });
+    this.emitTaskCreated(result.data, agentId);
+
+    if (result.data.assignedTo && !this.sessions.isOnline(result.data.assignedTo)) {
+      const spawnResult = await this.spawner.spawnForTask(result.data.assignedTo, result.data.id);
+      if (!spawnResult.ok) {
+        logger.warn(
+          { taskId: result.data.id, assignedTo: result.data.assignedTo, reason: spawnResult.reason },
+          "Failed to auto-spawn task worker",
+        );
+      } else {
+        logger.info(
+          { taskId: result.data.id, assignedTo: result.data.assignedTo },
+          "Auto-spawned offline assignee for task",
+        );
+      }
+    }
   }
 
   private async handleTaskList(agentId: string): Promise<void> {
@@ -1098,7 +1143,11 @@ export class Router {
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.updated', task: updateResult.data });
+    this.emitTaskUpdated(updateResult.data, agentId);
+
+    if (updateResult.data.status === "done" || updateResult.data.status === "failed") {
+      this.spawner.despawnForTask(updateResult.data.id);
+    }
   }
 
   // --- Broadcast helpers ---
@@ -1131,5 +1180,25 @@ export class Router {
 
   getActiveMeetings(): Map<string, MeetingRoom> {
     return this.activeMeetings;
+  }
+
+  private emitTaskCreated(task: unknown, requesterId?: string): void {
+    const message = { type: "task.created", task };
+    if (requesterId) {
+      this.sessions.send(requesterId, message);
+      this.sessions.broadcast(message, requesterId);
+      return;
+    }
+    this.sessions.broadcast(message);
+  }
+
+  private emitTaskUpdated(task: unknown, requesterId?: string): void {
+    const message = { type: "task.updated", task };
+    if (requesterId) {
+      this.sessions.send(requesterId, message);
+      this.sessions.broadcast(message, requesterId);
+      return;
+    }
+    this.sessions.broadcast(message);
   }
 }
