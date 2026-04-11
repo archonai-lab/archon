@@ -11,6 +11,7 @@ const WS_URL = `ws://localhost:${TEST_PORT}`;
 const TEST_AGENT = "test-agent";
 const TASK_ADMIN = "task-admin";
 const TASK_ASSIGNEE = "task-assignee";
+const TASK_OBSERVER = "task-observer";
 
 let hub: HubServer;
 const openSockets: WebSocket[] = [];
@@ -60,6 +61,12 @@ beforeAll(async () => {
         workspacePath: "~/.archon/agents/task-assignee",
         status: "active",
       },
+      {
+        id: TASK_OBSERVER,
+        displayName: "Task Observer",
+        workspacePath: "~/.archon/agents/task-observer",
+        status: "active",
+      },
     ])
     .onConflictDoNothing();
 
@@ -90,6 +97,7 @@ afterAll(async () => {
   await db.delete(agents).where(eq(agents.id, TEST_AGENT));
   await db.delete(agents).where(eq(agents.id, TASK_ADMIN));
   await db.delete(agents).where(eq(agents.id, TASK_ASSIGNEE));
+  await db.delete(agents).where(eq(agents.id, TASK_OBSERVER));
   await closeConnection();
 });
 
@@ -291,6 +299,16 @@ describe("HubServer", () => {
         token: TASK_ASSIGNEE,
       });
 
+      const observerWs = await connect();
+      await sendAndReceive(observerWs, {
+        type: "auth",
+        agentId: TASK_OBSERVER,
+        token: TASK_OBSERVER,
+      });
+
+      const observerMessages: unknown[] = [];
+      observerWs.on("message", (raw) => observerMessages.push(JSON.parse(raw.toString())));
+
       const assigneeEventPromise = waitForMessage(assigneeWs);
       const requesterReply = await sendAndReceive(adminWs, {
         type: "task.create",
@@ -316,6 +334,7 @@ describe("HubServer", () => {
         },
       });
       const assigneeEvent = await assigneeEventPromise;
+      await new Promise((r) => setTimeout(r, 100));
 
       for (const message of [requesterReply, assigneeEvent]) {
         expect(message).toMatchObject({
@@ -343,6 +362,8 @@ describe("HubServer", () => {
           },
         });
       }
+
+      expect(observerMessages).toEqual([]);
     });
   });
 });
