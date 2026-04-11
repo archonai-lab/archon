@@ -17,6 +17,7 @@ import {
 import { listMeetings, getMeetingTranscript } from "../meeting/meeting-queries.js";
 import { getLLMConfig, setLLMConfig, isLLMAvailable } from "../meeting/summarizer.js";
 import { AgentSpawner } from "./agent-spawner.js";
+import { createTask, listTasks, getTask, updateTask } from "../tasks/task-crud.js";
 import { logger } from "../utils/logger.js";
 
 export class Router {
@@ -221,6 +222,22 @@ export class Router {
 
       case "config.set":
         await this.handleConfigSet(agentId, message.key, message.value);
+        break;
+
+      case "task.create":
+        await this.handleTaskCreate(agentId, message);
+        break;
+
+      case "task.list":
+        await this.handleTaskList(agentId);
+        break;
+
+      case "task.get":
+        await this.handleTaskGet(agentId, message.taskId);
+        break;
+
+      case "task.update":
+        await this.handleTaskUpdate(agentId, message);
         break;
 
       default:
@@ -1019,9 +1036,39 @@ export class Router {
 
   // --- Meeting lifecycle ---
 
-  private handleMeetingEnd(meetingId: string): void {
+  private async handleMeetingEnd(meetingId: string): Promise<void> {
     // Clear meeting from all participant sessions — must happen before delete
     const room = this.activeMeetings.get(meetingId);
+    if (room) {
+      for (const item of room.getActionItems()) {
+        const created = await createTask(room.initiatorId, {
+          title: item.task,
+          assignedTo: item.assigneeId,
+          meetingId,
+        });
+
+        if (!created.ok) {
+          logger.warn(
+            { meetingId, task: item.task, assigneeId: item.assigneeId, error: created.error },
+            "Failed to create task from meeting action item",
+          );
+          continue;
+        }
+
+        this.emitTaskCreated(created.data, room.initiatorId);
+
+        if (created.data.assignedTo && (this.spawner.isSpawned(created.data.assignedTo) || !this.sessions.isOnline(created.data.assignedTo))) {
+          const spawnResult = await this.spawner.spawnForTask(created.data.assignedTo, created.data.id);
+          if (!spawnResult.ok) {
+            logger.warn(
+              { taskId: created.data.id, assignedTo: created.data.assignedTo, reason: spawnResult.reason },
+              "Failed to auto-spawn task worker from meeting action item",
+            );
+          }
+        }
+      }
+    }
+
     if (room) {
       for (const participantId of room.getParticipants()) {
         this.sessions.clearMeeting(participantId);
@@ -1059,6 +1106,84 @@ export class Router {
     this.spawner.killAll();
   }
 
+
+  // --- Task CRUD ---
+
+  private async handleTaskCreate(
+    agentId: string,
+    msg: { title: string; description?: string; assignedTo?: string; meetingId?: string }
+  ): Promise<void> {
+    const result = await createTask(agentId, {
+      title: msg.title,
+      description: msg.description,
+      assignedTo: msg.assignedTo,
+      meetingId: msg.meetingId,
+    });
+
+    if (!result.ok) {
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, result.error));
+      return;
+    }
+
+    this.emitTaskCreated(result.data, agentId);
+
+    if (result.data.assignedTo && !this.sessions.isOnline(result.data.assignedTo)) {
+      const spawnResult = await this.spawner.spawnForTask(result.data.assignedTo, result.data.id);
+      if (!spawnResult.ok) {
+        logger.warn(
+          { taskId: result.data.id, assignedTo: result.data.assignedTo, reason: spawnResult.reason },
+          "Failed to auto-spawn task worker",
+        );
+      } else {
+        logger.info(
+          { taskId: result.data.id, assignedTo: result.data.assignedTo },
+          "Auto-spawned offline assignee for task",
+        );
+      }
+    }
+  }
+
+  private async handleTaskList(agentId: string): Promise<void> {
+    const result = await listTasks(agentId);
+    if (!result.ok) return;
+    this.sessions.send(agentId, { type: 'task.list.result', tasks: result.data.tasks, total: result.data.total });
+  }
+
+  private async handleTaskGet(agentId: string, taskId: string): Promise<void> {
+    const result = await getTask(agentId, taskId);
+
+    if (!result.ok) {
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, result.error));
+      return;
+    }
+
+    this.sessions.send(agentId, { type: 'task.get.result', task: result.data });
+  }
+
+  private async handleTaskUpdate(
+    agentId: string,
+    msg: { taskId: string; status?: 'pending' | 'in_progress' | 'done' | 'failed'; result?: string }
+  ): Promise<void> {
+    const updateResult = await updateTask(agentId, msg.taskId, {
+      status: msg.status,
+      result: msg.result,
+    });
+
+    if (!updateResult.ok) {
+      const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
+      this.sessions.send(agentId, createError(code, updateResult.error));
+      return;
+    }
+
+    this.emitTaskUpdated(updateResult.data, agentId);
+
+    if (updateResult.data.status === "done" || updateResult.data.status === "failed") {
+      this.spawner.despawnForTask(updateResult.data.id);
+    }
+  }
+
   // --- Broadcast helpers ---
 
   private broadcastDirectoryUpdated(): void {
@@ -1090,5 +1215,25 @@ export class Router {
 
   getActiveMeetings(): Map<string, MeetingRoom> {
     return this.activeMeetings;
+  }
+
+  private emitTaskCreated(task: unknown, requesterId?: string): void {
+    const message = { type: "task.created", task };
+    if (requesterId) {
+      this.sessions.send(requesterId, message);
+      this.sessions.broadcast(message, requesterId);
+      return;
+    }
+    this.sessions.broadcast(message);
+  }
+
+  private emitTaskUpdated(task: unknown, requesterId?: string): void {
+    const message = { type: "task.updated", task };
+    if (requesterId) {
+      this.sessions.send(requesterId, message);
+      this.sessions.broadcast(message, requesterId);
+      return;
+    }
+    this.sessions.broadcast(message);
   }
 }

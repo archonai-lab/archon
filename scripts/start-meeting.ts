@@ -216,7 +216,7 @@ ws.on("message", async (raw) => {
         type: "meeting.create",
         title,
         invitees: agentIds,
-        tokenBudget: 50000,
+        tokenBudget: parseInt(get("--budget", "15000"), 10),
         agenda,
         summaryMode: (process.env.HUB_LLM_API_KEY ? "llm" : "structured") as "off" | "structured" | "llm",
         ...(methodology ? { methodology } : {}),

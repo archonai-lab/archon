@@ -77,6 +77,8 @@ TypeScript (ESM, `"module": "NodeNext"`), ws (WebSocket), drizzle-orm + postgres
 - **ESM imports**: Use `.js` extensions in import paths (TypeScript NodeNext resolution)
 - **IDs**: Text primary keys (nanoid or semantic like `'ceo'`, `'engineering'`)
 - **Auth (MVP)**: Token must match agentId (pre-shared token pattern, placeholder for JWT)
+- **Repo-local notes**: Use `notes/` for investigation notes, checkpoints, and incomplete verification writeups. Keep one note per topic and start each note with frontmatter including `status`, `created_at`, `updated_at`, `author`, `summary`, and `problem`. `author` must be the agent name, not the platform name. Notes are author-owned by default.
+- **Feature ownership**: When implementing a feature or exposing a new official concept, the owner must validate it end-to-end before calling it done. That validation must cover the happy path, failure path, and worst-case edge behavior — unit and integration tests alone are not enough.
 
 ## Git workflow
 
@@ -134,7 +136,8 @@ Rules:
 
 ### Commits
 
-- **[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)** format
+- **[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)** using the qoomon guide style:
+  - https://gist.github.com/qoomon/5dfcdf8eec66a051ecd85625518cfd13
   - `feat: add meeting phase state machine`
   - `fix: validate token before session create`
   - `refactor(hub): simplify session cleanup`

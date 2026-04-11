@@ -187,6 +187,33 @@ export const ConfigSetMessage = z.object({
   value: z.unknown(),
 });
 
+
+// --- Task CRUD ---
+
+export const TaskCreateMessage = z.object({
+  type: z.literal('task.create'),
+  title: z.string().min(1).max(256),
+  description: z.string().optional(),
+  assignedTo: z.string().min(1).optional(),
+  meetingId: z.string().min(1).optional(),
+});
+
+export const TaskListMessage = z.object({
+  type: z.literal('task.list'),
+});
+
+export const TaskGetMessage = z.object({
+  type: z.literal('task.get'),
+  taskId: z.string().min(1),
+});
+
+export const TaskUpdateMessage = z.object({
+  type: z.literal('task.update'),
+  taskId: z.string().min(1),
+  status: z.enum(['pending', 'in_progress', 'done', 'failed']).optional(),
+  result: z.string().optional(),
+});
+
 // --- Ping/Pong ---
 
 export const PingMessage = z.object({ type: z.literal("ping") });
@@ -234,6 +261,11 @@ export const InboundMessage = z.discriminatedUnion("type", [
   // Meeting history
   MeetingHistoryMessage,
   MeetingTranscriptMessage,
+  // Task CRUD
+  TaskCreateMessage,
+  TaskListMessage,
+  TaskGetMessage,
+  TaskUpdateMessage,
   // Hub config
   ConfigGetMessage,
   ConfigSetMessage,
@@ -266,4 +298,8 @@ export type MeetingHistoryMessage = z.infer<typeof MeetingHistoryMessage>;
 export type MeetingTranscriptMessage = z.infer<typeof MeetingTranscriptMessage>;
 export type ConfigGetMessage = z.infer<typeof ConfigGetMessage>;
 export type ConfigSetMessage = z.infer<typeof ConfigSetMessage>;
+export type TaskCreateMessage = z.infer<typeof TaskCreateMessage>;
+export type TaskListMessage = z.infer<typeof TaskListMessage>;
+export type TaskGetMessage = z.infer<typeof TaskGetMessage>;
+export type TaskUpdateMessage = z.infer<typeof TaskUpdateMessage>;
 export type InboundMessage = z.infer<typeof InboundMessage>;

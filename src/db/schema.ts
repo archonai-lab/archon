@@ -176,3 +176,30 @@ export const meetingMessages = pgTable(
   },
   (table) => [index("idx_meeting_messages_meeting").on(table.meetingId)]
 );
+
+// --- Tasks ---
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: text("status", { enum: ["pending", "in_progress", "done", "failed"] })
+      .notNull()
+      .default("pending"),
+    assignedTo: text("assigned_to").references(() => agents.id),
+    assignedBy: text("assigned_by"),
+    meetingId: text("meeting_id"),
+    result: text("result"),
+    version: integer("version").notNull().default(1),
+    changedBy: text("changed_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_tasks_assigned_to").on(table.assignedTo),
+    index("idx_tasks_status").on(table.status),
+    index("idx_tasks_meeting_id").on(table.meetingId),
+  ]
+);

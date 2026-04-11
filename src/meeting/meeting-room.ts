@@ -42,7 +42,7 @@ export interface MeetingRoomOptions {
   approvalRequired?: boolean;
   summaryMode?: SummaryMode;
   /** Called when meeting completes or is cancelled. */
-  onEnd?: (meetingId: string) => void;
+  onEnd?: (meetingId: string) => void | Promise<void>;
 }
 
 export class MeetingRoom {
@@ -80,7 +80,7 @@ export class MeetingRoom {
   private phaseStarted = false;
 
   private send: SendFn;
-  private onEnd?: (meetingId: string) => void;
+  private onEnd?: (meetingId: string) => void | Promise<void>;
 
   constructor(opts: MeetingRoomOptions) {
     this.id = opts.id ?? nanoid(12);
@@ -688,7 +688,7 @@ export class MeetingRoom {
     this.broadcastToParticipants(out);
 
     logger.info({ meetingId: this.id, decisions: decisions.length, actionItems: this.actionItems.length, hasSummary: !!summary }, "Meeting completed");
-    this.onEnd?.(this.id);
+    await this.onEnd?.(this.id);
   }
 
   async cancel(reason: string): Promise<void> {
@@ -707,7 +707,7 @@ export class MeetingRoom {
     this.broadcastToParticipants(out);
 
     logger.info({ meetingId: this.id, reason }, "Meeting cancelled");
-    this.onEnd?.(this.id);
+    await this.onEnd?.(this.id);
   }
 
   // --- Utilities ---
