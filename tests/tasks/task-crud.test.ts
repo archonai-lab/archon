@@ -98,6 +98,80 @@ describe("createTask", () => {
     expect(result.data.createdAt).toBeInstanceOf(Date);
   });
 
+  it("persists task metadata and returns the canonical outbound shape", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Plan with metadata",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "plan",
+        completionContract: {
+          taskType: "plan",
+          artifactRequired: true,
+          requiredArtifacts: ["plan.md"],
+        },
+        attempt: {
+          number: 2,
+          kind: "retry",
+          previousTaskId: "task-prev-1",
+        },
+        repoScope: {
+          targetRepo: "/tmp/archon-plan",
+          relatedRepos: ["/tmp/archon-agent"],
+          crossRepoPolicy: "explicit_related_only",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.taskType).toBe("plan");
+    expect(result.data.completionContract).toMatchObject({
+      taskType: "plan",
+      artifactRequired: true,
+      requiredArtifacts: ["plan.md"],
+    });
+    expect(result.data.attempt).toMatchObject({
+      number: 2,
+      kind: "retry",
+      previousTaskId: "task-prev-1",
+    });
+    expect(result.data.repoScope).toMatchObject({
+      targetRepo: "/tmp/archon-plan",
+      relatedRepos: ["/tmp/archon-agent"],
+      crossRepoPolicy: "explicit_related_only",
+    });
+
+    const fetched = await getTask(REGULAR_AGENT, result.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.taskType).toBe("plan");
+    expect(fetched.data.completionContract?.requiredArtifacts).toEqual(["plan.md"]);
+
+    const listed = await listTasks(REGULAR_AGENT);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const listedTask = listed.data.tasks.find((task) => task.id === result.data.id);
+    expect(listedTask).toBeTruthy();
+    expect(listedTask?.attempt).toMatchObject({ number: 2, kind: "retry" });
+  });
+
+  it("rejects invalid task metadata", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Bad metadata task",
+      taskMetadata: {
+        attempt: {
+          number: 0,
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/invalid task metadata/i);
+  });
+
   it("non-CEO agent cannot create a task", async () => {
     const result = await createTask(REGULAR_AGENT, { title: "Sneak task" });
 

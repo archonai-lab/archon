@@ -3,10 +3,15 @@ import { WebSocket } from "ws";
 import { eq } from "drizzle-orm";
 import { HubServer } from "../../src/hub/server.js";
 import { db, closeConnection } from "../../src/db/connection.js";
-import { agents } from "../../src/db/schema.js";
+import { agents, permissions, tasks } from "../../src/db/schema.js";
+import { grantPermission } from "../../src/hub/permissions.js";
 
 const TEST_PORT = 9599;
 const WS_URL = `ws://localhost:${TEST_PORT}`;
+const TEST_AGENT = "test-agent";
+const TASK_ADMIN = "task-admin";
+const TASK_ASSIGNEE = "task-assignee";
+const TASK_OBSERVER = "task-observer";
 
 let hub: HubServer;
 const openSockets: WebSocket[] = [];
@@ -34,22 +39,44 @@ function waitForMessage(ws: WebSocket): Promise<unknown> {
 }
 
 beforeAll(async () => {
-  // Ensure test agent exists in DB
+  // Ensure test agents exist in DB
   await db
     .insert(agents)
-    .values({
-      id: "test-agent",
-      displayName: "Test Agent",
-      workspacePath: "~/.archon/agents/test-agent",
-      status: "active",
-    })
+    .values([
+      {
+        id: TEST_AGENT,
+        displayName: "Test Agent",
+        workspacePath: "~/.archon/agents/test-agent",
+        status: "active",
+      },
+      {
+        id: TASK_ADMIN,
+        displayName: "Task Admin",
+        workspacePath: "~/.archon/agents/task-admin",
+        status: "active",
+      },
+      {
+        id: TASK_ASSIGNEE,
+        displayName: "Task Assignee",
+        workspacePath: "~/.archon/agents/task-assignee",
+        status: "active",
+      },
+      {
+        id: TASK_OBSERVER,
+        displayName: "Task Observer",
+        workspacePath: "~/.archon/agents/task-observer",
+        status: "active",
+      },
+    ])
     .onConflictDoNothing();
+
+  await grantPermission(TASK_ADMIN, "task:*", "admin");
 
   hub = new HubServer();
   await hub.start(TEST_PORT);
 });
 
-afterEach(() => {
+afterEach(async () => {
   // Close all sockets opened during the test
   for (const ws of openSockets) {
     if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
@@ -57,12 +84,20 @@ afterEach(() => {
     }
   }
   openSockets.length = 0;
+
+  await db.delete(tasks).where(eq(tasks.assignedBy, TASK_ADMIN));
 });
 
 afterAll(async () => {
-  await hub.stop();
+  if (hub) {
+    await hub.stop();
+  }
   // Clean up test data
-  await db.delete(agents).where(eq(agents.id, "test-agent"));
+  await db.delete(permissions).where(eq(permissions.agentId, TASK_ADMIN));
+  await db.delete(agents).where(eq(agents.id, TEST_AGENT));
+  await db.delete(agents).where(eq(agents.id, TASK_ADMIN));
+  await db.delete(agents).where(eq(agents.id, TASK_ASSIGNEE));
+  await db.delete(agents).where(eq(agents.id, TASK_OBSERVER));
   await closeConnection();
 });
 
@@ -72,8 +107,8 @@ describe("HubServer", () => {
       const ws = await connect();
       const reply = await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       expect(reply).toMatchObject({
@@ -112,7 +147,7 @@ describe("HubServer", () => {
 
       const reply = await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
+        agentId: TEST_AGENT,
         token: "wrong-token",
       });
 
@@ -141,8 +176,8 @@ describe("HubServer", () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       const reply = await sendAndReceive(ws, { type: "ping" });
@@ -153,8 +188,8 @@ describe("HubServer", () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       // Send status update — deprecated, should not error
@@ -163,7 +198,7 @@ describe("HubServer", () => {
       // Give it a moment to process — should not crash
       await new Promise((r) => setTimeout(r, 100));
       const agent = await db.query.agents.findFirst({
-        where: eq(agents.id, "test-agent"),
+        where: eq(agents.id, TEST_AGENT),
       });
       // Status stays "active" (lifecycle field, not presence)
       expect(agent?.status).toBe("active");
@@ -188,8 +223,8 @@ describe("HubServer", () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       const reply = await sendAndReceive(ws, { type: "faketype" });
@@ -205,8 +240,8 @@ describe("HubServer", () => {
       const ws = await connect();
       await sendAndReceive(ws, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       // Disconnect
@@ -215,7 +250,7 @@ describe("HubServer", () => {
 
       // Status in DB stays "active" (lifecycle, not presence)
       const agent = await db.query.agents.findFirst({
-        where: eq(agents.id, "test-agent"),
+        where: eq(agents.id, TEST_AGENT),
       });
       expect(agent?.status).toBe("active");
     });
@@ -224,8 +259,8 @@ describe("HubServer", () => {
       const ws1 = await connect();
       await sendAndReceive(ws1, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       const ws1ClosePromise = new Promise<number>((resolve) => {
@@ -236,8 +271,8 @@ describe("HubServer", () => {
       const ws2 = await connect();
       await sendAndReceive(ws2, {
         type: "auth",
-        agentId: "test-agent",
-        token: "test-agent",
+        agentId: TEST_AGENT,
+        token: TEST_AGENT,
       });
 
       // First socket should have been closed
@@ -247,6 +282,88 @@ describe("HubServer", () => {
       // Second socket should work
       const reply = await sendAndReceive(ws2, { type: "ping" });
       expect(reply).toEqual({ type: "pong" });
+    });
+
+    it("should expose task metadata fields on live task.created payloads", async () => {
+      const adminWs = await connect();
+      await sendAndReceive(adminWs, {
+        type: "auth",
+        agentId: TASK_ADMIN,
+        token: TASK_ADMIN,
+      });
+
+      const assigneeWs = await connect();
+      await sendAndReceive(assigneeWs, {
+        type: "auth",
+        agentId: TASK_ASSIGNEE,
+        token: TASK_ASSIGNEE,
+      });
+
+      const observerWs = await connect();
+      await sendAndReceive(observerWs, {
+        type: "auth",
+        agentId: TASK_OBSERVER,
+        token: TASK_OBSERVER,
+      });
+
+      const observerMessages: unknown[] = [];
+      observerWs.on("message", (raw) => observerMessages.push(JSON.parse(raw.toString())));
+
+      const assigneeEventPromise = waitForMessage(assigneeWs);
+      const requesterReply = await sendAndReceive(adminWs, {
+        type: "task.create",
+        title: "Websocket metadata regression",
+        assignedTo: TASK_ASSIGNEE,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            taskType: "implementation",
+            artifactRequired: true,
+            requiredSections: ["verification"],
+          },
+          attempt: {
+            number: 3,
+            kind: "retry",
+            previousTaskId: "task-prev-2",
+          },
+          repoScope: {
+            targetRepo: "/tmp/archon",
+            relatedRepos: ["/tmp/archon-agent"],
+            crossRepoPolicy: "explicit_related_only",
+          },
+        },
+      });
+      const assigneeEvent = await assigneeEventPromise;
+      await new Promise((r) => setTimeout(r, 100));
+
+      for (const message of [requesterReply, assigneeEvent]) {
+        expect(message).toMatchObject({
+          type: "task.created",
+          task: {
+            title: "Websocket metadata regression",
+            assignedTo: TASK_ASSIGNEE,
+            assignedBy: TASK_ADMIN,
+            taskType: "implementation",
+            completionContract: {
+              taskType: "implementation",
+              artifactRequired: true,
+              requiredSections: ["verification"],
+            },
+            attempt: {
+              number: 3,
+              kind: "retry",
+              previousTaskId: "task-prev-2",
+            },
+            repoScope: {
+              targetRepo: "/tmp/archon",
+              relatedRepos: ["/tmp/archon-agent"],
+              crossRepoPolicy: "explicit_related_only",
+            },
+          },
+        });
+      }
+
+      expect(observerMessages).toEqual([]);
     });
   });
 });

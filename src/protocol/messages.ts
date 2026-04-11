@@ -13,6 +13,7 @@ import {
   MeetingApproveMessage,
   MeetingCancelMessage,
 } from "../meeting/types.js";
+import { taskMetadataSchema } from "../tasks/task-metadata.js";
 
 // --- Auth ---
 
@@ -196,6 +197,7 @@ export const TaskCreateMessage = z.object({
   description: z.string().optional(),
   assignedTo: z.string().min(1).optional(),
   meetingId: z.string().min(1).optional(),
+  taskMetadata: taskMetadataSchema.optional(),
 });
 
 export const TaskListMessage = z.object({
