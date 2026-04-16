@@ -170,6 +170,11 @@ export const meetingMessages = pgTable(
       .references(() => agents.id),
     phase: text("phase").notNull(),
     content: text("content").notNull(),
+    speakerRole: text("speaker_role").notNull(),
+    authorityScope: text("authority_scope").notNull(),
+    contentType: text("content_type", {
+      enum: ["statement", "proposal", "vote", "assignment", "acknowledgement"],
+    }).notNull(),
     tokenCount: integer("token_count").notNull().default(0),
     relevance: text("relevance", { enum: ["must_speak", "could_add", "pass"] }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),

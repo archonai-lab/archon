@@ -26,6 +26,24 @@ export interface MeetingSummary {
 export interface TranscriptEntry {
   id: number;
   agentId: string;
+  speakerId: string;
+  speakerRole: string;
+  authorityScope: string;
+  contentType: string;
+  displayName: string;
+  phase: string;
+  content: string;
+  tokenCount: number;
+  relevance: string | null;
+  createdAt: Date;
+}
+
+interface TranscriptRow {
+  id: number;
+  agentId: string;
+  speakerRole: string | null;
+  authorityScope: string | null;
+  contentType: string | null;
   displayName: string;
   phase: string;
   content: string;
@@ -50,6 +68,36 @@ export interface MeetingTranscriptResult {
   };
   messages: TranscriptEntry[];
   participants: string[];
+}
+
+export function assertStructuralProvenance(row: TranscriptRow): TranscriptEntry {
+  if (!row.agentId) {
+    throw new Error(`Transcript row ${row.id} is missing speaker_id`);
+  }
+  if (!row.speakerRole) {
+    throw new Error(`Transcript row ${row.id} is missing speaker_role`);
+  }
+  if (!row.authorityScope) {
+    throw new Error(`Transcript row ${row.id} is missing authority_scope`);
+  }
+  if (!row.contentType) {
+    throw new Error(`Transcript row ${row.id} is missing content_type`);
+  }
+
+  return {
+    id: row.id,
+    agentId: row.agentId,
+    speakerId: row.agentId,
+    speakerRole: row.speakerRole,
+    authorityScope: row.authorityScope,
+    contentType: row.contentType,
+    displayName: row.displayName,
+    phase: row.phase,
+    content: row.content,
+    tokenCount: row.tokenCount,
+    relevance: row.relevance,
+    createdAt: row.createdAt,
+  };
 }
 
 export async function listMeetings(opts: MeetingHistoryOpts = {}): Promise<MeetingSummary[]> {
@@ -117,10 +165,13 @@ export async function getMeetingTranscript(meetingId: string): Promise<MeetingTr
   if (!meeting) return null;
 
   // Get messages with agent display names
-  const messages = await db
+  const rows = await db
     .select({
       id: meetingMessages.id,
       agentId: meetingMessages.agentId,
+      speakerRole: meetingMessages.speakerRole,
+      authorityScope: meetingMessages.authorityScope,
+      contentType: meetingMessages.contentType,
       displayName: agents.displayName,
       phase: meetingMessages.phase,
       content: meetingMessages.content,
@@ -132,6 +183,7 @@ export async function getMeetingTranscript(meetingId: string): Promise<MeetingTr
     .innerJoin(agents, eq(meetingMessages.agentId, agents.id))
     .where(eq(meetingMessages.meetingId, meetingId))
     .orderBy(meetingMessages.id);
+  const messages = rows.map(assertStructuralProvenance);
 
   // Get participants
   const participantRows = await db.query.meetingParticipants.findMany({

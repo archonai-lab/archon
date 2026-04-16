@@ -42,7 +42,19 @@ export type HubMessage =
   | { type: "role.deleted"; roleId: string }
   | { type: "meeting.invite"; meetingId: string; title: string; initiator: string; agenda?: string }
   | { type: "meeting.phase_change"; meetingId: string; phase: string; budgetRemaining: number }
-  | { type: "meeting.message"; meetingId: string; agentId: string; content: string; phase: string; tokenCount: number; budgetRemaining: number }
+  | {
+      type: "meeting.message";
+      meetingId: string;
+      agentId: string;
+      speakerId: string;
+      speakerRole: string;
+      authorityScope: string;
+      contentType: string;
+      content: string;
+      phase: string;
+      tokenCount: number;
+      budgetRemaining: number;
+    }
   | { type: "meeting.relevance_check"; meetingId: string; lastMessage: { agentId: string; content: string }; phase: string; contextSummary: string }
   | { type: "meeting.your_turn"; meetingId: string; phase: string; budgetRemaining: number }
   | { type: "meeting.proposal"; meetingId: string; proposalIndex: number; agentId: string; proposal: string }
