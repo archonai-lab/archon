@@ -39,6 +39,9 @@ HUB_URL="ws://localhost:9500"
 SUMMARY_MODE="structured"
 PROJECT_DIR="$(pwd)"
 SKIP_CHECKS=false
+BASE_REF=""
+HEAD_REF=""
+PR_URL=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -100,6 +103,9 @@ elif ! (echo >/dev/tcp/"$HUB_HOST"/"$HUB_PORT") &>/dev/null 2>&1; then
 fi
 
 cd "$PROJECT_DIR"
+WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
+TARGET_REPO="$(basename "$WORKTREE_ROOT")"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 # ── Auto-detect agents if not specified ──────────────────────────────────────
 
@@ -141,19 +147,33 @@ case $MODE in
     echo -e "${BLUE}[1/3] Gathering staged changes...${NC}"
     DIFF=$(git diff --cached)
     DIFF_STAT=$(git diff --cached --stat)
+    HEAD_REF="INDEX"
     ;;
   branch)
-    BASE_BRANCH=$(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null || echo "HEAD~5")
+    if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+      BASE_REF="origin/main"
+    elif git rev-parse --verify --quiet refs/remotes/origin/master >/dev/null; then
+      BASE_REF="origin/master"
+    else
+      BASE_REF="$(git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null || echo "HEAD~5")"
+    fi
+    HEAD_REF="HEAD"
     echo -e "${BLUE}[1/3] Gathering branch changes...${NC}"
-    DIFF=$(git diff "$BASE_BRANCH"...HEAD)
-    DIFF_STAT=$(git diff "$BASE_BRANCH"...HEAD --stat)
+    DIFF=$(git diff "$BASE_REF"...$HEAD_REF)
+    DIFF_STAT=$(git diff "$BASE_REF"...$HEAD_REF --stat)
     ;;
   all)
     echo -e "${BLUE}[1/3] Gathering all uncommitted changes...${NC}"
     DIFF=$(git diff HEAD)
     DIFF_STAT=$(git diff HEAD --stat)
+    BASE_REF="HEAD"
+    HEAD_REF="WORKTREE"
     ;;
 esac
+
+if [ "$MODE" = "branch" ] && command -v gh >/dev/null 2>&1; then
+  PR_URL="$(gh pr view --json url --jq .url 2>/dev/null || true)"
+fi
 
 if [ -z "$DIFF" ]; then
   echo -e "${YELLOW}No changes to review.${NC}"
@@ -235,22 +255,29 @@ fi
 echo -e "${BLUE}[3/3] Creating review meeting on Archon hub...${NC}"
 echo ""
 
-# Write full diff to temp file (agents can read it if needed)
-DIFF_FILE="$REVIEW_TMPDIR/diff.patch"
-echo "$DIFF" > "$DIFF_FILE"
-DIFF_LINES=$(echo "$DIFF" | wc -l)
-
 # Build agenda
 AGENDA=$(cat <<AGENDA_EOF
 Code Review — ${FILE_COUNT}
 $(if [ -n "$CHECK_RESULTS" ]; then echo -e "\nAutomated checks:\n${CHECK_RESULTS}"; fi)
+
+Review target:
+- Target repo: ${TARGET_REPO}
+- Workspace path: ${WORKTREE_ROOT}
+- Current branch: ${CURRENT_BRANCH}
+- Review mode: ${MODE}
+- Base ref: ${BASE_REF:-"(not applicable)"}
+- Head ref: ${HEAD_REF:-"(not applicable)"}
+$(if [ -n "$PR_URL" ]; then echo "- PR URL: ${PR_URL}"; fi)
+
+Reviewer self-check:
+- Run \`pwd\`
+- Run \`git rev-parse --show-toplevel\`
+- Run \`git branch --show-current\`
+$(if [ "$MODE" = "branch" ]; then echo "- Run \`git diff --name-only ${BASE_REF}...${HEAD_REF}\`"; elif [ "$MODE" = "staged" ]; then echo "- Run \`git diff --name-only --cached\`"; else echo "- Run \`git diff --name-only HEAD\`"; fi)
+- If those commands do not match the target repo/workspace/branch above, stop immediately and reply with \`INVALID REVIEW SURFACE\`
+
 Changed files:
 ${DIFF_STAT}
-
-Full diff saved to: ${DIFF_FILE} (${DIFF_LINES} lines)
-
-Key changes (first 80 lines):
-$(echo "$DIFF" | grep "^[+-]" | grep -v "^[+-][+-][+-]" | head -80)
 AGENDA_EOF
 )
 
