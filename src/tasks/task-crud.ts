@@ -142,7 +142,7 @@ export async function canManageTasks(agentId: string): Promise<boolean> {
 
 const GLOBAL_TASK_BOARD_ALLOWLIST = new Set(["ceo", "levia"]);
 
-async function canViewAllTasks(agentId: string): Promise<boolean> {
+export async function canViewAllTasks(agentId: string): Promise<boolean> {
   if (await canManageTasks(agentId)) return true;
   // Temporary bridge until real role-based task board visibility exists.
   // Keep this allowlist narrow and remove it once human/admin board access is modeled explicitly.

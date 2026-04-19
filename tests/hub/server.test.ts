@@ -3,15 +3,16 @@ import { WebSocket } from "ws";
 import { eq, inArray, or } from "drizzle-orm";
 import { HubServer } from "../../src/hub/server.js";
 import { db, closeConnection } from "../../src/db/connection.js";
-import { agents, meetingMessages, meetingParticipants, meetings } from "../../src/db/schema.js";
+import { agents, meetingMessages, meetingParticipants, meetings, permissions, tasks } from "../../src/db/schema.js";
 import { logger } from "../../src/utils/logger.js";
 
 const TEST_PORT = 9599;
 const WS_URL = `ws://localhost:${TEST_PORT}`;
 const TEST_AGENT_ID = "test-agent";
 const TEST_INVITEE_ID = "test-agent-2";
+const TEST_OBSERVER_ID = "test-agent-3";
 const DISCONNECT_GRACE_MS = 200;
-const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID];
+const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID, TEST_OBSERVER_ID];
 
 let hub: HubServer;
 const openSockets: WebSocket[] = [];
@@ -86,6 +87,29 @@ function waitForMessageType(
   });
 }
 
+function expectNoMessageType(
+  ws: WebSocket,
+  type: string,
+  timeoutMs = 300,
+): Promise<"timeout"> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.off("message", onMessage);
+      resolve("timeout");
+    }, timeoutMs);
+
+    const onMessage = (raw: Buffer) => {
+      const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (message.type !== type) return;
+      clearTimeout(timer);
+      ws.off("message", onMessage);
+      reject(new Error(`Unexpected ${type}`));
+    };
+
+    ws.on("message", onMessage);
+  });
+}
+
 beforeAll(async () => {
   // Ensure test agents exist in DB
   await db
@@ -108,6 +132,22 @@ beforeAll(async () => {
     })
     .onConflictDoNothing();
 
+  await db
+    .insert(agents)
+    .values({
+      id: TEST_OBSERVER_ID,
+      displayName: "Test Agent 3",
+      workspacePath: "~/.archon/agents/test-agent-3",
+      status: "active",
+    })
+    .onConflictDoNothing();
+
+  await db.insert(permissions).values({
+    agentId: TEST_AGENT_ID,
+    resource: "task:*",
+    action: "admin",
+  }).onConflictDoNothing();
+
   hub = new HubServer({ disconnectGraceMs: DISCONNECT_GRACE_MS });
   await hub.start(TEST_PORT);
 });
@@ -128,6 +168,9 @@ afterAll(async () => {
   }
   // Clean up test data
   await cleanupTestMeetings();
+  await db.delete(tasks).where(inArray(tasks.assignedTo, TEST_AGENT_IDS));
+  await db.delete(tasks).where(eq(tasks.assignedBy, TEST_AGENT_ID));
+  await db.delete(permissions).where(eq(permissions.agentId, TEST_AGENT_ID));
   await db.delete(agents).where(inArray(agents.id, TEST_AGENT_IDS));
   await closeConnection();
 });
@@ -318,6 +361,82 @@ describe("HubServer", () => {
       // Second socket should work
       const reply = await sendAndReceive(ws2, { type: "ping" });
       expect(reply).toEqual({ type: "pong" });
+    });
+
+    it("sends task.created and task.updated only to the requester and assignee, not unrelated sessions", async () => {
+      const requester = await connect();
+      const assignee = await connect();
+      const observer = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(assignee, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+      });
+      await sendAndReceive(observer, {
+        type: "auth",
+        agentId: TEST_OBSERVER_ID,
+        token: TEST_OBSERVER_ID,
+      });
+
+      const observerCreated = expectNoMessageType(observer, "task.created", 300);
+
+      const createdForRequester = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Visibility check task",
+        assignedTo: TEST_INVITEE_ID,
+      }) as { type: string; task: { id: string } };
+      const createdForObserver = await observerCreated;
+
+      expect(createdForRequester).toMatchObject({ type: "task.created" });
+      expect(createdForObserver).toBe("timeout");
+
+      const requesterUpdated = waitForMessageType(requester, "task.updated");
+      const observerUpdated = expectNoMessageType(observer, "task.updated", 300);
+
+      const updatedForAssignee = await sendAndReceive(assignee, {
+        type: "task.update",
+        taskId: createdForRequester.task.id,
+        status: "in_progress",
+      });
+
+      expect(await requesterUpdated).toMatchObject({ type: "task.updated" });
+      expect(updatedForAssignee).toMatchObject({ type: "task.updated" });
+      expect(await observerUpdated).toBe("timeout");
+    });
+  });
+});
+
+describe("task router error mapping", () => {
+  it("returns INVALID_MESSAGE with the task error text for invalid task updates", async () => {
+    const requester = await connect();
+    await sendAndReceive(requester, {
+      type: "auth",
+      agentId: TEST_AGENT_ID,
+      token: TEST_AGENT_ID,
+    });
+
+    const created = await sendAndReceive(requester, {
+      type: "task.create",
+      title: "Transition mapping task",
+      assignedTo: TEST_AGENT_ID,
+    }) as { type: string; task: { id: string } };
+
+    const reply = await sendAndReceive(requester, {
+      type: "task.update",
+      taskId: created.task.id,
+      status: "done",
+    });
+
+    expect(reply).toEqual({
+      type: "error",
+      code: "INVALID_MESSAGE",
+      message: 'Invalid status transition: pending → done',
     });
   });
 });

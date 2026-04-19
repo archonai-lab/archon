@@ -17,7 +17,7 @@ import {
 import { listMeetings, getMeetingTranscript } from "../meeting/meeting-queries.js";
 import { getLLMConfig, setLLMConfig, isLLMAvailable } from "../meeting/summarizer.js";
 import { AgentSpawner } from "./agent-spawner.js";
-import { createTask, listTasks, getTask, updateTask } from "../tasks/task-crud.js";
+import { canViewAllTasks, createTask, listTasks, getTask, updateTask } from "../tasks/task-crud.js";
 import { logger } from "../utils/logger.js";
 
 export class Router {
@@ -1135,6 +1135,12 @@ export class Router {
     this.killAllAgents();
   }
 
+  private mapTaskClientError(error: string): ErrorCode {
+    return error.toLowerCase().includes("permission denied")
+      ? ErrorCode.PERMISSION_DENIED
+      : ErrorCode.INVALID_MESSAGE;
+  }
+
   // --- Task CRUD ---
 
   private async handleTaskCreate(
@@ -1156,12 +1162,12 @@ export class Router {
     });
 
     if (!result.ok) {
-      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code));
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(result.error);
+      this.sessions.send(agentId, createError(code, result.error));
       return;
     }
 
-    this.emitTaskCreated(result.data, agentId);
+    await this.emitTaskCreated(result.data, agentId);
 
     if (result.data.assignedTo && !this.sessions.isOnline(result.data.assignedTo)) {
       const spawnResult = await this.spawner.spawnForTask(result.data.assignedTo, result.data.id);
@@ -1189,8 +1195,8 @@ export class Router {
     const result = await getTask(agentId, taskId);
 
     if (!result.ok) {
-      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code));
+      const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(result.error);
+      this.sessions.send(agentId, createError(code, result.error));
       return;
     }
 
@@ -1213,12 +1219,12 @@ export class Router {
     });
 
     if (!updateResult.ok) {
-      const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code));
+      const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(updateResult.error);
+      this.sessions.send(agentId, createError(code, updateResult.error));
       return;
     }
 
-    this.emitTaskUpdated(updateResult.data, agentId);
+    await this.emitTaskUpdated(updateResult.data, agentId);
 
     if (updateResult.data.status === "done" || updateResult.data.status === "failed") {
       this.spawner.despawnForTask(updateResult.data.id);
@@ -1312,23 +1318,40 @@ export class Router {
     return this.activeMeetings;
   }
 
-  private emitTaskCreated(task: unknown, requesterId?: string): void {
-    const message = { type: "task.created", task };
-    if (requesterId) {
-      this.sessions.send(requesterId, message);
-      this.sessions.broadcast(message, requesterId);
-      return;
+  private async getTaskAudience(task: unknown, requesterId?: string): Promise<string[]> {
+    const audience = new Set<string>();
+    if (requesterId) audience.add(requesterId);
+
+    if (task && typeof task === "object") {
+      const taskRecord = task as Record<string, unknown>;
+      if (typeof taskRecord.assignedTo === "string" && taskRecord.assignedTo.length > 0) {
+        audience.add(taskRecord.assignedTo);
+      }
     }
-    this.sessions.broadcast(message);
+
+    for (const session of this.sessions.getAll()) {
+      if (audience.has(session.agentId)) continue;
+      if (await canViewAllTasks(session.agentId)) {
+        audience.add(session.agentId);
+      }
+    }
+
+    return [...audience];
   }
 
-  private emitTaskUpdated(task: unknown, requesterId?: string): void {
-    const message = { type: "task.updated", task };
-    if (requesterId) {
-      this.sessions.send(requesterId, message);
-      this.sessions.broadcast(message, requesterId);
-      return;
+  private async emitTaskCreated(task: unknown, requesterId?: string): Promise<void> {
+    const message = { type: "task.created", task };
+    const audience = await this.getTaskAudience(task, requesterId);
+    for (const agentId of audience) {
+      this.sessions.send(agentId, message);
     }
-    this.sessions.broadcast(message);
+  }
+
+  private async emitTaskUpdated(task: unknown, requesterId?: string): Promise<void> {
+    const message = { type: "task.updated", task };
+    const audience = await this.getTaskAudience(task, requesterId);
+    for (const agentId of audience) {
+      this.sessions.send(agentId, message);
+    }
   }
 }
