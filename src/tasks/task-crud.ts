@@ -254,8 +254,8 @@ export async function getTask(
     return clientErr(`Task "${taskId}" not found`);
   }
 
-  const isCeo = await canManageTasks(requesterId);
-  if (!isCeo && task.assignedTo !== requesterId) {
+  const canSeeTask = await canViewAllTasks(requesterId);
+  if (!canSeeTask && task.assignedTo !== requesterId) {
     return clientErr("Permission denied: task is not assigned to you");
   }
 

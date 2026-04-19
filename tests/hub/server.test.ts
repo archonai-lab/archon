@@ -11,8 +11,9 @@ const WS_URL = `ws://localhost:${TEST_PORT}`;
 const TEST_AGENT_ID = "test-agent";
 const TEST_INVITEE_ID = "test-agent-2";
 const TEST_OBSERVER_ID = "test-agent-3";
+const TEST_GLOBAL_VIEWER_ID = "levia";
 const DISCONNECT_GRACE_MS = 200;
-const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID, TEST_OBSERVER_ID];
+const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID, TEST_OBSERVER_ID, TEST_GLOBAL_VIEWER_ID];
 
 let hub: HubServer;
 const openSockets: WebSocket[] = [];
@@ -138,6 +139,16 @@ beforeAll(async () => {
       id: TEST_OBSERVER_ID,
       displayName: "Test Agent 3",
       workspacePath: "~/.archon/agents/test-agent-3",
+      status: "active",
+    })
+    .onConflictDoNothing();
+
+  await db
+    .insert(agents)
+    .values({
+      id: TEST_GLOBAL_VIEWER_ID,
+      displayName: "Levia",
+      workspacePath: "~/.archon/agents/levia",
       status: "active",
     })
     .onConflictDoNothing();
@@ -408,6 +419,42 @@ describe("HubServer", () => {
       expect(await requesterUpdated).toMatchObject({ type: "task.updated" });
       expect(updatedForAssignee).toMatchObject({ type: "task.updated" });
       expect(await observerUpdated).toBe("timeout");
+    });
+
+    it("allows global task-board viewers to fetch tasks with task.get", async () => {
+      const requester = await connect();
+      const globalViewer = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(globalViewer, {
+        type: "auth",
+        agentId: TEST_GLOBAL_VIEWER_ID,
+        token: TEST_GLOBAL_VIEWER_ID,
+      });
+
+      const created = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Task.get visibility check",
+        assignedTo: TEST_INVITEE_ID,
+      }) as { type: string; task: { id: string } };
+
+      const fetched = await sendAndReceive(globalViewer, {
+        type: "task.get",
+        taskId: created.task.id,
+      });
+
+      expect(fetched).toMatchObject({
+        type: "task.get.result",
+        task: {
+          id: created.task.id,
+          assignedTo: TEST_INVITEE_ID,
+          title: "Task.get visibility check",
+        },
+      });
     });
   });
 });

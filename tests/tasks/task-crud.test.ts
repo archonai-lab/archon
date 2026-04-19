@@ -292,6 +292,18 @@ describe("getTask", () => {
     const result = await getTask(CEO_AGENT, created.data.id);
     expect(result.ok).toBe(true);
   });
+
+  it("allowlisted global task-board viewers can get any task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Board-visible task",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await getTask(LEVIA_AGENT, created.data.id);
+    expect(result.ok).toBe(true);
+  });
 });
 
 // --- Auth: update ---
