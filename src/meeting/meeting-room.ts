@@ -23,6 +23,9 @@ import {
   type MeetingCancelledOut,
   type MeetingAwaitingApprovalOut,
   type PhaseEndReason,
+  type SpeakerRole,
+  type AuthorityScope,
+  type ContentType,
 } from "./types.js";
 
 export interface SendFn {
@@ -43,6 +46,16 @@ export interface MeetingRoomOptions {
   summaryMode?: SummaryMode;
   /** Called when meeting completes or is cancelled. */
   onEnd?: (meetingId: string) => void | Promise<void>;
+}
+
+interface TranscriptEvent {
+  agentId: string;
+  speakerRole: SpeakerRole;
+  authorityScope: AuthorityScope;
+  contentType: ContentType;
+  phase: string;
+  content: string;
+  tokenCount: number;
 }
 
 export class MeetingRoom {
@@ -69,7 +82,7 @@ export class MeetingRoom {
 
   private proposals: Proposal[] = [];
   private actionItems: ActionItem[] = [];
-  private messageLog: Array<{ agentId: string; phase: string; content: string }> = [];
+  private messageLog: TranscriptEvent[] = [];
 
   private turnManager = new TurnManager();
   private speakingQueue: string[] = [];
@@ -260,22 +273,19 @@ export class MeetingRoom {
     this.tokensUsed += tokens;
     this.consecutivePasses = 0;
     this.lastMessage = { agentId, content };
+    const transcriptEvent = this.buildTranscriptEvent(agentId, "statement", content, tokens);
 
-    // Persist message
-    await db.insert(meetingMessages).values({
-      meetingId: this.id,
-      agentId,
-      phase: this.phase,
-      content,
-      tokenCount: tokens,
-    });
-    this.messageLog.push({ agentId, phase: this.phase, content });
+    await this.persistTranscriptEvent(transcriptEvent);
 
     // Broadcast to all participants
     const msg: MeetingMessageOut = {
       type: "meeting.message",
       meetingId: this.id,
       agentId,
+      speakerId: transcriptEvent.agentId,
+      speakerRole: transcriptEvent.speakerRole,
+      authorityScope: transcriptEvent.authorityScope,
+      contentType: transcriptEvent.contentType,
       content,
       phase: this.phase,
       tokenCount: tokens,
@@ -511,14 +521,9 @@ export class MeetingRoom {
     const idx = this.proposals.length;
     this.proposals.push({ agentId, proposal, votes: [] });
 
-    // Persist as message
-    await db.insert(meetingMessages).values({
-      meetingId: this.id,
-      agentId,
-      phase: this.phase,
-      content: `[PROPOSAL] ${proposal}`,
-      tokenCount: countTokens(proposal),
-    });
+    await this.persistTranscriptEvent(
+      this.buildTranscriptEvent(agentId, "proposal", proposal, countTokens(proposal)),
+    );
 
     // Broadcast
     const out: MeetingProposalOut = {
@@ -549,6 +554,12 @@ export class MeetingRoom {
     if (prop.votes.some((v) => v.agentId === agentId)) return false;
 
     prop.votes.push({ agentId, vote, reason });
+    const voteContent = reason
+      ? `${vote}: ${reason}`
+      : vote;
+    await this.persistTranscriptEvent(
+      this.buildTranscriptEvent(agentId, "vote", voteContent, countTokens(voteContent)),
+    );
 
     // Broadcast
     const out: MeetingVoteResultOut = {
@@ -591,6 +602,12 @@ export class MeetingRoom {
       deadline,
       acknowledged: false,
     });
+    const assignmentContent = deadline
+      ? `${task} -> ${assigneeId} (due: ${deadline})`
+      : `${task} -> ${assigneeId}`;
+    await this.persistTranscriptEvent(
+      this.buildTranscriptEvent(agentId, "assignment", assignmentContent, countTokens(assignmentContent)),
+    );
 
     // Broadcast
     const out: MeetingActionItemOut = {
@@ -616,6 +633,10 @@ export class MeetingRoom {
     if (item.assigneeId !== agentId) return false;
 
     item.acknowledged = true;
+    const ackContent = `Acknowledged task: ${item.task}`;
+    await this.persistTranscriptEvent(
+      this.buildTranscriptEvent(agentId, "acknowledgement", ackContent, countTokens(ackContent)),
+    );
 
     // Check if all items acknowledged → complete
     const allAcked = this.actionItems.every((i) => i.acknowledged);
@@ -732,6 +753,76 @@ export class MeetingRoom {
       capabilities: [...phaseDef.capabilities],
     };
     this.broadcastToParticipants(msg);
+  }
+
+  private buildTranscriptEvent(
+    agentId: string,
+    contentType: ContentType,
+    content: string,
+    tokenCount: number,
+  ): TranscriptEvent {
+    return {
+      agentId,
+      contentType,
+      ...this.resolveProvenance(agentId, contentType),
+      phase: this.phase,
+      content,
+      tokenCount,
+    };
+  }
+
+  private resolveProvenance(
+    agentId: string,
+    contentType: ContentType,
+  ): {
+    speakerRole: SpeakerRole;
+    authorityScope: AuthorityScope;
+  } {
+    const speakerRole: SpeakerRole = agentId === this.initiatorId
+      ? "initiator"
+      : "participant";
+
+    if (speakerRole === "initiator") {
+      return {
+        speakerRole,
+        authorityScope: contentType === "proposal" || contentType === "vote"
+          ? "phase:proposals"
+          : contentType === "assignment" || contentType === "acknowledgement"
+            ? "phase:assignments"
+            : "meeting:initiator",
+      };
+    }
+
+    switch (contentType) {
+      case "proposal":
+      case "vote":
+        return { speakerRole, authorityScope: "phase:proposals" };
+      case "assignment":
+      case "acknowledgement":
+        return { speakerRole, authorityScope: "phase:assignments" };
+      case "statement":
+        return {
+          speakerRole,
+          authorityScope: this.currentPhaseHas("open_discussion")
+            ? "phase:open_discussion"
+            : "meeting:participant",
+        };
+    }
+  }
+
+  private async persistTranscriptEvent(event: TranscriptEvent): Promise<void> {
+    await db.insert(meetingMessages).values({
+      meetingId: this.id,
+      agentId: event.agentId,
+      phase: event.phase,
+      content: event.content,
+      provenanceKnown: true,
+      speakerRole: event.speakerRole,
+      authorityScope: event.authorityScope,
+      contentType: event.contentType,
+      tokenCount: event.tokenCount,
+    });
+    this.messageLog.push(event);
   }
 
   // --- Getters ---

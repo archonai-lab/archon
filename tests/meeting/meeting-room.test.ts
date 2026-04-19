@@ -56,7 +56,7 @@ describe("MeetingRoom", () => {
       "decide-auth-propose-test", "decide-auth-vote-test",
       "assign-auth-test", "assign-auth-ack-test",
       "decide-advance-incomplete-test", "advance-non-initiator-test",
-      "invited-not-joined-test",
+      "invited-not-joined-test", "assign-test", "provenance-write-test",
     ];
     for (const id of testMeetingIds) {
       await db.delete(meetingMessages).where(eq(meetingMessages.meetingId, id));
@@ -271,6 +271,7 @@ describe("MeetingRoom", () => {
       invitees: [AGENT_A],
       send: mockSend,
     });
+    await room.persist();
     room.join(INITIATOR);
     room.join(AGENT_A);
 
@@ -296,6 +297,66 @@ describe("MeetingRoom", () => {
 
     // All acknowledged → meeting completes
     expect(room.getStatus()).toBe("completed");
+  });
+
+  it("should persist structural provenance for meeting transcript events", async () => {
+    sent = [];
+    const room = new MeetingRoom({
+      id: "provenance-write-test",
+      title: "Provenance Write Test",
+      initiatorId: INITIATOR,
+      invitees: [AGENT_A],
+      send: mockSend,
+    });
+    await room.persist();
+    room.join(INITIATOR);
+    room.join(AGENT_A);
+
+    await room.speak(INITIATOR, "Opening context");
+    expect(room.getPhase()).toBe("discuss");
+
+    expect(await room.advance(INITIATOR)).toBe(true); // -> decide
+    expect(room.getPhase()).toBe("decide");
+
+    expect(await room.propose(AGENT_A, "Ship the spike")).toBe(true);
+    expect(await room.vote(INITIATOR, 0, "approve")).toBe(true);
+    expect(await room.vote(AGENT_A, 0, "approve")).toBe(true);
+
+    expect(room.getPhase()).toBe("assign");
+    expect(await room.assignTask(INITIATOR, "Write verdict artifact", AGENT_A, "2026-04-20")).toBe(true);
+    expect(await room.acknowledge(AGENT_A, 0)).toBe(true);
+
+    const rows = await db.query.meetingMessages.findMany({
+      where: eq(meetingMessages.meetingId, "provenance-write-test"),
+      orderBy: (table, { asc }) => [asc(table.id)],
+    });
+
+    expect(rows.map((row) => row.contentType)).toEqual([
+      "statement",
+      "proposal",
+      "vote",
+      "vote",
+      "assignment",
+      "acknowledgement",
+    ]);
+    expect(rows.map((row) => row.speakerRole)).toEqual([
+      "initiator",
+      "participant",
+      "initiator",
+      "participant",
+      "initiator",
+      "participant",
+    ]);
+    expect(rows.map((row) => row.authorityScope)).toEqual([
+      "meeting:initiator",
+      "phase:proposals",
+      "phase:proposals",
+      "phase:proposals",
+      "phase:assignments",
+      "phase:assignments",
+    ]);
+    expect(rows.every((row) => row.agentId.length > 0)).toBe(true);
+    expect(rows.every((row) => row.provenanceKnown)).toBe(true);
   });
 
   it("should complete meeting and persist decisions", async () => {

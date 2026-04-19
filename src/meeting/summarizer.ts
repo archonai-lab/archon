@@ -77,7 +77,14 @@ interface SummaryInput {
   title: string;
   agenda?: string;
   participants: string[];
-  messages: Array<{ agentId: string; phase: string; content: string }>;
+  messages: Array<{
+    agentId: string;
+    speakerRole: string;
+    authorityScope: string;
+    contentType: string;
+    phase: string;
+    content: string;
+  }>;
   decisions: Array<{ proposal: string; proposedBy: string }>;
   actionItems: Array<{ task: string; assigneeId: string; deadline?: string }>;
   tokensUsed: number;
@@ -111,7 +118,7 @@ async function generateLLMSummary(input: SummaryInput): Promise<string> {
   const client = new OpenAI({ apiKey: llmConfig.llmApiKey, baseURL: llmConfig.llmBaseUrl });
 
   const transcript = input.messages
-    .map((m) => `[${m.phase}] ${m.agentId}: ${m.content}`)
+    .map((m) => `[${m.phase}/${m.contentType}/${m.authorityScope}] ${m.agentId}: ${m.content}`)
     .join("\n");
 
   const prompt = `Summarize this meeting concisely. Include: key discussion points, decisions made, and action items assigned.

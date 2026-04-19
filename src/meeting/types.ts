@@ -22,6 +22,27 @@ export type MeetingStatus = z.infer<typeof MeetingStatus>;
 export const RelevanceLevel = z.enum(["must_speak", "could_add", "pass"]);
 export type RelevanceLevel = z.infer<typeof RelevanceLevel>;
 
+export const SpeakerRole = z.enum(["initiator", "participant"]);
+export type SpeakerRole = z.infer<typeof SpeakerRole>;
+
+export const AuthorityScope = z.enum([
+  "meeting:initiator",
+  "meeting:participant",
+  "phase:open_discussion",
+  "phase:proposals",
+  "phase:assignments",
+]);
+export type AuthorityScope = z.infer<typeof AuthorityScope>;
+
+export const ContentType = z.enum([
+  "statement",
+  "proposal",
+  "vote",
+  "assignment",
+  "acknowledgement",
+]);
+export type ContentType = z.infer<typeof ContentType>;
+
 // --- Inbound meeting messages (agent → hub) ---
 
 export const MeetingCreateMessage = z.object({
@@ -157,6 +178,10 @@ export interface MeetingMessageOut {
   type: "meeting.message";
   meetingId: string;
   agentId: string;
+  speakerId: string;
+  speakerRole: SpeakerRole;
+  authorityScope: AuthorityScope;
+  contentType: ContentType;
   content: string;
   phase: string;
   tokenCount: number;
