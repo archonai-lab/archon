@@ -1139,13 +1139,20 @@ export class Router {
 
   private async handleTaskCreate(
     agentId: string,
-    msg: { title: string; description?: string; assignedTo?: string; meetingId?: string }
+    msg: {
+      title: string;
+      description?: string;
+      assignedTo?: string;
+      meetingId?: string;
+      taskMetadata?: import("../tasks/task-metadata.js").TaskMetadata;
+    }
   ): Promise<void> {
     const result = await createTask(agentId, {
       title: msg.title,
       description: msg.description,
       assignedTo: msg.assignedTo,
       meetingId: msg.meetingId,
+      taskMetadata: msg.taskMetadata,
     });
 
     if (!result.ok) {
@@ -1192,11 +1199,17 @@ export class Router {
 
   private async handleTaskUpdate(
     agentId: string,
-    msg: { taskId: string; status?: 'pending' | 'in_progress' | 'done' | 'failed'; result?: string }
+    msg: {
+      taskId: string;
+      status?: 'pending' | 'in_progress' | 'done' | 'failed';
+      result?: string;
+      contractResult?: { contractId: string; output: Record<string, unknown> };
+    }
   ): Promise<void> {
     const updateResult = await updateTask(agentId, msg.taskId, {
       status: msg.status,
       result: msg.result,
+      contractResult: msg.contractResult,
     });
 
     if (!updateResult.ok) {

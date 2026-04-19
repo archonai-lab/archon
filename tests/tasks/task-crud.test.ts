@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, closeConnection } from "../../src/db/connection.js";
@@ -11,6 +14,7 @@ import {
 } from "../../src/tasks/task-crud.js";
 import type { TaskErr } from "../../src/tasks/task-crud.js";
 import { grantPermission } from "../../src/hub/permissions.js";
+import { ensureArchonHome } from "../../src/setup.js";
 
 const CEO_AGENT = "task-test-ceo";
 const LEVIA_AGENT = "levia";
@@ -36,6 +40,19 @@ afterAll(async () => {
   await db.delete(agents).where(eq(agents.id, OTHER_AGENT));
   await closeConnection();
 });
+
+function withSeededArchonHome(): () => void {
+  const previousHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "archon-home-"));
+  ensureArchonHome();
+  return () => {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  };
+}
 
 // --- Status transition validation ---
 
@@ -96,6 +113,49 @@ describe("createTask", () => {
     expect(result.data.version).toBe(1);
     expect(result.data.id).toBeTruthy();
     expect(result.data.createdAt).toBeInstanceOf(Date);
+  });
+
+  it("persists task metadata and returns the canonical outbound shape", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Review with metadata",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "review",
+        completionContract: {
+          contractId: "codebase_review_task",
+        },
+        repoScope: {
+          targetRepo: "/tmp/archon-output-contract-main",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.taskType).toBe("review");
+    expect(result.data.completionContract?.contractId).toBe("codebase_review_task");
+    expect(result.data.repoScope?.targetRepo).toBe("/tmp/archon-output-contract-main");
+
+    const fetched = await getTask(REGULAR_AGENT, result.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.completionContract?.contractId).toBe("codebase_review_task");
+  });
+
+  it("rejects invalid task metadata", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Bad metadata task",
+      taskMetadata: {
+        attempt: {
+          number: 0,
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/invalid task metadata/i);
   });
 
   it("non-CEO agent cannot create a task", async () => {
@@ -333,6 +393,124 @@ describe("updateTask", () => {
     expect(done.data.status).toBe("done");
     expect(done.data.result).toBe("Analysis complete. Found 3 issues.");
     expect(done.data.version).toBe(3);
+  });
+
+  it("accepts a valid contractResult when the completion contract requests one", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Structured review task",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const done = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "No findings: no merge blockers found.\nVerdict: safe to merge.\nVerification: reviewed the current repo diff.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "pass_with_notes",
+            self_check: {
+              repo_root: "/tmp/archon-output-contract-main",
+              branch: "feat/output-contract-validation-main",
+              diff_files: ["src/tasks/task-crud.ts"],
+            },
+            findings: [],
+            verification: [
+              { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+              { kind: "diff_review", evidence: "reviewed the requested diff" },
+            ],
+            risks: [],
+          },
+        },
+      });
+
+      expect(done.ok).toBe(true);
+      if (!done.ok) return;
+      expect(done.data.status).toBe("done");
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects done when a requested contractResult is missing", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Missing contract result",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "No findings: no merge blockers found.",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/requires contractResult/i);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects contract output when required repo-scope proof is missing", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Missing self check",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Needs changes.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "needs_changes",
+            findings: [],
+            verification: [
+              { kind: "diff_review", evidence: "reviewed the requested diff" },
+            ],
+            risks: [],
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/output\.self_check/i);
+    } finally {
+      restoreHome();
+    }
   });
 });
 
