@@ -10,7 +10,7 @@ import {
   unique,
   index,
 } from "drizzle-orm/pg-core";
-import type { TaskMetadata } from "../tasks/task-metadata.js";
+import type { TaskContractResult, TaskMetadata } from "../tasks/task-metadata.js";
 
 // --- Departments ---
 
@@ -193,6 +193,7 @@ export const tasks = pgTable(
     assignedBy: text("assigned_by"),
     meetingId: text("meeting_id"),
     taskMetadata: jsonb("task_metadata").$type<TaskMetadata | null>(),
+    contractResult: jsonb("contract_result").$type<TaskContractResult | null>(),
     result: text("result"),
     version: integer("version").notNull().default(1),
     changedBy: text("changed_by"),

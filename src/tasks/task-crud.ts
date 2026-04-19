@@ -6,11 +6,11 @@ import { logger } from "../utils/logger.js";
 import { randomUUID } from "node:crypto";
 import { validateCompiledOutput } from "../contracts/compiler.js";
 import { loadContracts } from "../contracts/loader.js";
-import { ensureArchonHome } from "../setup.js";
 import type { ValidationIssue } from "../contracts/types.js";
 import type {
   TaskAttempt,
   TaskCompletionContract,
+  TaskContractResult,
   TaskMetadata,
   TaskRepoScope,
 } from "./task-metadata.js";
@@ -27,6 +27,7 @@ export interface Task extends Omit<TaskRecord, "taskMetadata"> {
   completionContract?: TaskCompletionContract | null;
   attempt?: TaskAttempt | null;
   repoScope?: TaskRepoScope | null;
+  contractResult: TaskContractResult | null;
 }
 
 export interface TaskOk<T> {
@@ -54,11 +55,6 @@ export interface UpdateTaskOpts {
   contractResult?: TaskContractResult;
   status?: TaskStatus;
   result?: string;
-}
-
-export interface TaskContractResult {
-  contractId: string;
-  output: Record<string, unknown>;
 }
 
 export interface ListTaskOpts {
@@ -93,6 +89,7 @@ function toTaskView(task: TaskRecord): Task {
     changedBy: task.changedBy,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
+    contractResult: task.contractResult ?? null,
     taskType: metadata?.taskType ?? null,
     completionContract: metadata?.completionContract ?? null,
     attempt: metadata?.attempt ?? null,
@@ -115,7 +112,6 @@ function validateTaskContractResult(task: Task, opts: UpdateTaskOpts): TaskErr |
     return clientErr(`Task result failed output contract "${requestedContractId}": contractResult.contractId must match requested contractId`);
   }
 
-  ensureArchonHome();
   const loadResult = loadContracts();
   const loaded = loadResult.contracts.find((entry) =>
     entry.contract.id === requestedContractId && entry.contract.contractType === "task"
@@ -309,6 +305,7 @@ export async function updateTask(
     .update(tasks)
     .set({
       ...(opts.status !== undefined ? { status: opts.status } : {}),
+      ...(opts.contractResult !== undefined ? { contractResult: opts.contractResult } : {}),
       ...(opts.result !== undefined ? { result: opts.result } : {}),
       version: task.version + 1,
       changedBy: requesterId,

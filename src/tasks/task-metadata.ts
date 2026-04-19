@@ -34,6 +34,11 @@ export interface TaskMetadata {
   repoScope?: TaskRepoScope | null;
 }
 
+export interface TaskContractResult {
+  contractId: string;
+  output: Record<string, unknown>;
+}
+
 export const taskCompletionContractSchema = z.object({
   taskType: z.string().min(1).optional(),
   deliverableKind: z.string().min(1).optional(),

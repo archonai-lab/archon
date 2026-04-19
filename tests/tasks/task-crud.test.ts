@@ -22,6 +22,8 @@ const REGULAR_AGENT = "task-test-agent";
 const OTHER_AGENT = "task-test-other";
 
 beforeAll(async () => {
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "task_metadata" jsonb');
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "contract_result" jsonb');
   await db.insert(agents).values([
     { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
     { id: REGULAR_AGENT, displayName: "Task Test Agent", workspacePath: "/tmp/task-test-agent" },
@@ -437,6 +439,28 @@ describe("updateTask", () => {
       expect(done.ok).toBe(true);
       if (!done.ok) return;
       expect(done.data.status).toBe("done");
+      expect(done.data.contractResult).toEqual({
+        contractId: "codebase_review_task",
+        output: {
+          verdict: "pass_with_notes",
+          self_check: {
+            repo_root: "/tmp/archon-output-contract-main",
+            branch: "feat/output-contract-validation-main",
+            diff_files: ["src/tasks/task-crud.ts"],
+          },
+          findings: [],
+          verification: [
+            { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+            { kind: "diff_review", evidence: "reviewed the requested diff" },
+          ],
+          risks: [],
+        },
+      });
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.contractResult).toEqual(done.data.contractResult);
     } finally {
       restoreHome();
     }
