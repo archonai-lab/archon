@@ -1150,7 +1150,7 @@ export class Router {
 
     if (!result.ok) {
       const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code, result.error));
+      this.sessions.send(agentId, createError(code));
       return;
     }
 
@@ -1183,7 +1183,7 @@ export class Router {
 
     if (!result.ok) {
       const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code, result.error));
+      this.sessions.send(agentId, createError(code));
       return;
     }
 
@@ -1201,7 +1201,7 @@ export class Router {
 
     if (!updateResult.ok) {
       const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : ErrorCode.PERMISSION_DENIED;
-      this.sessions.send(agentId, createError(code, updateResult.error));
+      this.sessions.send(agentId, createError(code));
       return;
     }
 

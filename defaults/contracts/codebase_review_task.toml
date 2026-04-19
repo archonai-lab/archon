@@ -1,0 +1,120 @@
+[info]
+id = "codebase_review_task"
+version = "1.0"
+contract_type = "task"
+
+[output]
+type = "object"
+required = true
+normative = true
+
+[output.fields.verdict]
+type = "enum"
+required = true
+normative = true
+description = "Machine-readable review outcome. Use invalid_surface when the target repo, branch, or diff does not match the requested review surface."
+values = ["pass", "pass_with_notes", "needs_changes", "invalid_surface"]
+
+[output.fields.self_check]
+type = "object"
+required = true
+normative = true
+description = "Evidence that the reviewer inspected the intended repository surface before making a review claim."
+
+[output.fields.self_check.fields.repo_root]
+type = "string"
+required = true
+normative = true
+description = "Absolute repository root that was actually inspected, usually from git rev-parse --show-toplevel."
+
+[output.fields.self_check.fields.branch]
+type = "string"
+required = true
+normative = true
+description = "Current branch that was actually inspected, usually from git branch --show-current."
+
+[output.fields.self_check.fields.diff_files]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Files present in the reviewed diff. This should come from the actual git diff command for the review target."
+
+[output.fields.self_check.fields.diff_files.items]
+type = "string"
+required = true
+normative = true
+
+[output.fields.findings]
+type = "array"
+required = true
+normative = true
+allow_empty = true
+description = "Structured review findings. Use an empty array only when the review genuinely found no issues."
+
+[output.fields.findings.items]
+type = "object"
+required = true
+normative = true
+
+[output.fields.findings.items.fields.severity]
+type = "enum"
+required = true
+normative = true
+description = "Impact level for the finding."
+values = ["critical", "warning", "note"]
+
+[output.fields.findings.items.fields.file]
+type = "string"
+required = true
+normative = true
+description = "Repository-relative file path for the finding."
+
+[output.fields.findings.items.fields.problem]
+type = "string"
+required = true
+normative = true
+description = "Concrete problem observed in the reviewed code or contract."
+
+[output.fields.findings.items.fields.fix]
+type = "string"
+required = false
+normative = false
+description = "Suggested fix or next action. This guides humans and agents but does not decide checker pass/fail."
+
+[output.fields.verification]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Concrete evidence used to support the verdict. Avoid vague prose; name what was checked."
+
+[output.fields.verification.items]
+type = "object"
+required = true
+normative = true
+
+[output.fields.verification.items.fields.kind]
+type = "enum"
+required = true
+normative = true
+description = "Kind of verification evidence recorded for the review."
+values = ["repo_scope_check", "diff_review", "test_run"]
+
+[output.fields.verification.items.fields.evidence]
+type = "string"
+required = true
+normative = true
+description = "Specific evidence for this verification item, such as command output summary or reviewed diff scope."
+
+[output.fields.risks]
+type = "array"
+required = true
+normative = true
+allow_empty = true
+description = "Known limitations, uncertainty, or follow-up risk that remains after the review."
+
+[output.fields.risks.items]
+type = "string"
+required = true
+normative = true

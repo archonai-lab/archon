@@ -11,9 +11,12 @@ import { logger } from "./utils/logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const ARCHON_HOME = resolve(homedir(), ".archon");
 // One level up from src/ (dev) or dist/ (prod) — always the project root defaults/
 const DEFAULTS_DIR = resolve(__dirname, "../defaults");
+
+export function getArchonHome(): string {
+  return resolve(homedir(), ".archon");
+}
 
 /**
  * Recursively copy files from src to dest, skipping files that already exist.
@@ -61,25 +64,33 @@ export function ensureArchonHome(): void {
     throw new Error(`defaults/ directory not found at ${DEFAULTS_DIR}`);
   }
 
-  const created = !existsSync(ARCHON_HOME);
+  const archonHome = getArchonHome();
+
+  const created = !existsSync(archonHome);
   if (created) {
-    mkdirSync(ARCHON_HOME, { recursive: true });
+    mkdirSync(archonHome, { recursive: true });
   }
 
   let agentsCopied = 0;
   let methodsCopied = 0;
+  let contractsCopied = 0;
 
   try {
     // Copy default agents
     agentsCopied = copyMissing(
       join(DEFAULTS_DIR, "agents"),
-      join(ARCHON_HOME, "agents")
+      join(archonHome, "agents")
     );
 
     // Copy default methodologies
     methodsCopied = copyMissing(
       join(DEFAULTS_DIR, "methodologies"),
-      join(ARCHON_HOME, "methodologies")
+      join(archonHome, "methodologies")
+    );
+
+    contractsCopied = copyMissing(
+      join(DEFAULTS_DIR, "contracts"),
+      join(archonHome, "contracts")
     );
   } catch (err) {
     logger.fatal({ err }, "Failed to copy defaults to ~/.archon/ — check permissions and disk space");
@@ -88,23 +99,23 @@ export function ensureArchonHome(): void {
 
   // Version tracking: stamp ~/.archon/.version on first run; warn on mismatch
   const defaultsVersion = readVersion(join(DEFAULTS_DIR, ".version"));
-  const runtimeVersion = readVersion(join(ARCHON_HOME, ".version"));
+  const runtimeVersion = readVersion(join(archonHome, ".version"));
 
   if (defaultsVersion !== null) {
     if (runtimeVersion === null) {
       // First run — write version stamp
-      writeFileSync(join(ARCHON_HOME, ".version"), defaultsVersion);
+      writeFileSync(join(archonHome, ".version"), defaultsVersion);
     } else if (runtimeVersion !== defaultsVersion) {
       logger.warn(
         { runtimeVersion, defaultsVersion },
-        "Archon defaults version mismatch — run `archon update` to sync unmodified defaults"
+        "Archon defaults version mismatch — defaults are seeded once; manually compare ~/.archon defaults with package defaults before copying updates"
       );
     }
   }
 
-  if (created || agentsCopied > 0 || methodsCopied > 0) {
+  if (created || agentsCopied > 0 || methodsCopied > 0 || contractsCopied > 0) {
     logger.info(
-      { archonHome: ARCHON_HOME, agentsCopied, methodsCopied, firstRun: created },
+      { archonHome, agentsCopied, methodsCopied, contractsCopied, firstRun: created },
       "Runtime directory initialized"
     );
   }
