@@ -1,0 +1,39 @@
+[info]
+id = "task_update_input_fixture"
+version = "1.0"
+contract_type = "task"
+
+[input]
+type = "object"
+required = true
+normative = true
+
+[input.binding]
+type = "message_type"
+message_type = "task.update"
+
+[input.fields.taskId]
+type = "string"
+required = true
+normative = true
+
+[input.fields.status]
+type = "enum"
+required = false
+normative = false
+values = ["pending", "in_progress", "done", "failed"]
+
+[input.fields.result]
+type = "string"
+required = false
+normative = false
+
+[input.fields.contractResult]
+type = "object"
+required = false
+normative = false
+
+[input.fields.contractResult.fields.contractId]
+type = "string"
+required = false
+normative = false

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parseContractToml } from "./toml.js";
 import type {
+  CanonicalContractInputBinding,
   CanonicalContractSchema,
   CanonicalField,
   CanonicalObjectField,
@@ -21,21 +22,48 @@ const authoringFieldSchema: z.ZodType<any> = z.lazy(() => z.object({
   allow_empty: z.boolean().optional(),
   fields: z.record(authoringFieldSchema).optional(),
   items: authoringFieldSchema.optional(),
-}));
+}).strict());
 
 const authoringContractSchema = z.object({
   info: z.object({
     id: z.string().min(1),
     version: z.string().min(1),
     contract_type: ContractTypeSchema,
-  }),
+  }).strict(),
+  input: z.object({
+    type: z.literal("object"),
+    required: z.boolean().optional().default(true),
+    normative: z.boolean().optional().default(true),
+    description: z.string().optional(),
+    fields: z.record(authoringFieldSchema),
+    binding: z.object({
+      type: z.literal("message_type"),
+      message_type: z.enum(["task.create", "task.update"]),
+    }).strict(),
+  }).strict().optional(),
   output: z.object({
     type: z.literal("object"),
     required: z.boolean().optional().default(true),
     normative: z.boolean().optional().default(true),
     description: z.string().optional(),
     fields: z.record(authoringFieldSchema),
-  }),
+  }).strict().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.input && !value.output) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Contract must define at least one of input or output",
+      path: ["output"],
+    });
+  }
+
+  if (value.input && !value.input.binding) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "input.binding is required when input is defined",
+      path: ["input", "binding"],
+    });
+  }
 });
 
 type AuthoringField = z.infer<typeof authoringFieldSchema>;
@@ -109,15 +137,31 @@ function compileField(field: AuthoringField): CanonicalField {
   throw new Error(`Unsupported field type: ${(field as { type?: string }).type ?? "unknown"}`);
 }
 
+function compileInputBinding(binding: NonNullable<AuthoringContract["input"]>["binding"]): CanonicalContractInputBinding {
+  return {
+    type: binding.type,
+    messageType: binding.message_type,
+  };
+}
+
 export function compileContractAuthoringObject(input: unknown): CanonicalContractSchema {
   const parsed = authoringContractSchema.parse(input) as AuthoringContract;
-  assertFieldSemantics(parsed.output, "output");
-  return {
+  if (parsed.input) {
+    assertFieldSemantics(parsed.input, "input");
+  }
+  if (parsed.output) {
+    assertFieldSemantics(parsed.output, "output");
+  }
+
+  const compiled: CanonicalContractSchema = {
     id: parsed.info.id,
     version: parsed.info.version,
     contractType: parsed.info.contract_type,
-    output: compileField(parsed.output) as CanonicalObjectField,
+    ...(parsed.input ? { input: compileField(parsed.input) as CanonicalObjectField } : {}),
+    ...(parsed.input?.binding ? { inputBinding: compileInputBinding(parsed.input.binding) } : {}),
+    ...(parsed.output ? { output: compileField(parsed.output) as CanonicalObjectField } : {}),
   };
+  return compiled;
 }
 
 export function compileContractToml(input: string): CanonicalContractSchema {
@@ -178,6 +222,12 @@ export function validateCompiledOutput(
   schema: CanonicalContractSchema,
   value: unknown,
 ): ValidationResult {
+  if (!schema.output) {
+    return {
+      ok: false,
+      issues: [{ path: "output", message: "compiled contract does not define output" }],
+    };
+  }
   const issues: ValidationIssue[] = [];
   validateField(value, schema.output, "output", issues);
   return {
