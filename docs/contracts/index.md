@@ -35,7 +35,7 @@ Descriptions in contracts can guide humans and agents, but they are not enforcem
 
 ## Current status
 
-Slice 1A is a scaffold.
+Slice 1A introduced the output-contract scaffold.
 
 It introduces:
 
@@ -47,7 +47,16 @@ It introduces:
 - structured output validation for the first review result shape
 - parity tests showing the old false-green review case
 
-It does not yet replace the current runner checker.
+Slice 2 PR1 adds input-contract compiler scaffolding:
+
+- `[input]` sections compile into the canonical schema
+- `[input.binding]` binds task inputs by `message_type`
+- the frozen covered message types are `task.create` and `task.update`
+- fixture contracts cover those two task input families
+
+This is compiler and fixture compatibility only. It does not yet connect input contracts to protocol routing or ingress validation.
+
+The contract system does not yet replace the current runner checker.
 
 ## Main idea
 
@@ -133,6 +142,7 @@ Later:
 - [Write a first contract](./write-a-first-contract.md)
 - [TOML format](./toml-format.md)
 - [Compiled schema](./compiled-schema.md)
+- [Input contracts](./input-contracts.md)
 
 ## Where contracts live
 
@@ -166,6 +176,8 @@ This scaffold does not yet:
 
 - replace the current task runner checker
 - generate prompts from contracts
+- validate incoming task messages from input contracts
+- route protocol messages from input contract bindings
 - bind meetings to workspaces
 - expose a UI for contract authors
 - migrate all review/task types
