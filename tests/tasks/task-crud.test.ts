@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, closeConnection } from "../../src/db/connection.js";
@@ -11,6 +14,7 @@ import {
 } from "../../src/tasks/task-crud.js";
 import type { TaskErr } from "../../src/tasks/task-crud.js";
 import { grantPermission } from "../../src/hub/permissions.js";
+import { ensureArchonHome } from "../../src/setup.js";
 
 const CEO_AGENT = "task-test-ceo";
 const LEVIA_AGENT = "levia";
@@ -18,8 +22,11 @@ const REGULAR_AGENT = "task-test-agent";
 const OTHER_AGENT = "task-test-other";
 
 beforeAll(async () => {
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "task_metadata" jsonb');
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "contract_result" jsonb');
   await db.insert(agents).values([
     { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
+    { id: LEVIA_AGENT, displayName: "Levia", workspacePath: "~/.archon/agents/levia" },
     { id: REGULAR_AGENT, displayName: "Task Test Agent", workspacePath: "/tmp/task-test-agent" },
     { id: OTHER_AGENT, displayName: "Task Test Other", workspacePath: "/tmp/task-test-other" },
   ]).onConflictDoNothing();
@@ -36,6 +43,19 @@ afterAll(async () => {
   await db.delete(agents).where(eq(agents.id, OTHER_AGENT));
   await closeConnection();
 });
+
+function withSeededArchonHome(): () => void {
+  const previousHome = process.env.HOME;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "archon-home-"));
+  ensureArchonHome();
+  return () => {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  };
+}
 
 // --- Status transition validation ---
 
@@ -98,6 +118,49 @@ describe("createTask", () => {
     expect(result.data.createdAt).toBeInstanceOf(Date);
   });
 
+  it("persists task metadata and returns the canonical outbound shape", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Review with metadata",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "review",
+        completionContract: {
+          contractId: "codebase_review_task",
+        },
+        repoScope: {
+          targetRepo: "/tmp/archon-output-contract-main",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.taskType).toBe("review");
+    expect(result.data.completionContract?.contractId).toBe("codebase_review_task");
+    expect(result.data.repoScope?.targetRepo).toBe("/tmp/archon-output-contract-main");
+
+    const fetched = await getTask(REGULAR_AGENT, result.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.completionContract?.contractId).toBe("codebase_review_task");
+  });
+
+  it("rejects invalid task metadata", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Bad metadata task",
+      taskMetadata: {
+        attempt: {
+          number: 0,
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe("CLIENT");
+    expect(result.error).toMatch(/invalid task metadata/i);
+  });
+
   it("non-CEO agent cannot create a task", async () => {
     const result = await createTask(REGULAR_AGENT, { title: "Sneak task" });
 
@@ -138,13 +201,43 @@ describe("listTasks", () => {
   });
 
   it("levia sees all tasks via temporary global board allowlist", async () => {
+    await createTask(CEO_AGENT, { title: "Levia regular visibility", assignedTo: REGULAR_AGENT });
+    await createTask(CEO_AGENT, { title: "Levia other visibility", assignedTo: OTHER_AGENT });
+
     const result = await listTasks(LEVIA_AGENT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const titles = result.data.tasks.map((t) => t.title);
-    expect(titles).toContain("For regular");
-    expect(titles).toContain("For other");
+    expect(titles).toContain("Levia regular visibility");
+    expect(titles).toContain("Levia other visibility");
+    expect(result.data.tasks.some((task) => task.assignedTo === OTHER_AGENT)).toBe(true);
+  });
+
+  it("keeps board-viewer task listing broader than non-viewer listing without widening task access", async () => {
+    const viewerVisibleTitle = "Viewer-visible task";
+    const hiddenTitle = "Observer-hidden task";
+
+    await createTask(CEO_AGENT, { title: viewerVisibleTitle, assignedTo: OTHER_AGENT });
+    await createTask(CEO_AGENT, { title: hiddenTitle, assignedTo: REGULAR_AGENT });
+
+    const viewerResult = await listTasks(LEVIA_AGENT);
+    const regularResult = await listTasks(REGULAR_AGENT);
+
+    expect(viewerResult.ok).toBe(true);
+    expect(regularResult.ok).toBe(true);
+    if (!viewerResult.ok || !regularResult.ok) return;
+
+    expect(viewerResult.data.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: viewerVisibleTitle, assignedTo: OTHER_AGENT }),
+      expect.objectContaining({ title: hiddenTitle, assignedTo: REGULAR_AGENT }),
+    ]));
+    expect(regularResult.data.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: hiddenTitle, assignedTo: REGULAR_AGENT }),
+    ]));
+    expect(regularResult.data.tasks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: viewerVisibleTitle }),
+    ]));
   });
 
   it("agent sees only their own tasks", async () => {
@@ -228,6 +321,18 @@ describe("getTask", () => {
     if (!created.ok) return;
 
     const result = await getTask(CEO_AGENT, created.data.id);
+    expect(result.ok).toBe(true);
+  });
+
+  it("allowlisted global task-board viewers can get any task", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Board-visible task",
+      assignedTo: OTHER_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const result = await getTask(LEVIA_AGENT, created.data.id);
     expect(result.ok).toBe(true);
   });
 });
@@ -333,6 +438,146 @@ describe("updateTask", () => {
     expect(done.data.status).toBe("done");
     expect(done.data.result).toBe("Analysis complete. Found 3 issues.");
     expect(done.data.version).toBe(3);
+  });
+
+  it("accepts a valid contractResult when the completion contract requests one", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Structured review task",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const done = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "No findings: no merge blockers found.\nVerdict: safe to merge.\nVerification: reviewed the current repo diff.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "pass_with_notes",
+            self_check: {
+              repo_root: "/tmp/archon-output-contract-main",
+              branch: "feat/output-contract-validation-main",
+              diff_files: ["src/tasks/task-crud.ts"],
+            },
+            findings: [],
+            verification: [
+              { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+              { kind: "diff_review", evidence: "reviewed the requested diff" },
+            ],
+            risks: [],
+          },
+        },
+      });
+
+      expect(done.ok).toBe(true);
+      if (!done.ok) return;
+      expect(done.data.status).toBe("done");
+      expect(done.data.contractResult).toEqual({
+        contractId: "codebase_review_task",
+        output: {
+          verdict: "pass_with_notes",
+          self_check: {
+            repo_root: "/tmp/archon-output-contract-main",
+            branch: "feat/output-contract-validation-main",
+            diff_files: ["src/tasks/task-crud.ts"],
+          },
+          findings: [],
+          verification: [
+            { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+            { kind: "diff_review", evidence: "reviewed the requested diff" },
+          ],
+          risks: [],
+        },
+      });
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.contractResult).toEqual(done.data.contractResult);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects done when a requested contractResult is missing", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Missing contract result",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "No findings: no merge blockers found.",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/requires contractResult/i);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects contract output when required repo-scope proof is missing", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Missing self check",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Needs changes.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "needs_changes",
+            findings: [],
+            verification: [
+              { kind: "diff_review", evidence: "reviewed the requested diff" },
+            ],
+            risks: [],
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/output\.self_check/i);
+    } finally {
+      restoreHome();
+    }
   });
 });
 

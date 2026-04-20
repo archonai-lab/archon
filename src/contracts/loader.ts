@@ -1,10 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 import { compileContractToml } from "./compiler.js";
 import type { CanonicalContractSchema } from "./types.js";
+import { getArchonHome } from "../setup.js";
 
-export type ContractSourceKind = "runtime";
+const contractsDir = dirname(fileURLToPath(import.meta.url));
+
+export type ContractSourceKind = "runtime" | "default";
 
 export interface ContractLoadSource {
   kind: ContractSourceKind;
@@ -29,8 +32,12 @@ export interface ContractLoadResult {
   diagnostics: ContractLoadDiagnostic[];
 }
 
-export function getUserContractsDir(archonHome = resolve(homedir(), ".archon")): string {
+export function getUserContractsDir(archonHome = getArchonHome()): string {
   return resolve(archonHome, "contracts");
+}
+
+export function getDefaultContractsDir(): string {
+  return resolve(contractsDir, "..", "..", "defaults", "contracts");
 }
 
 function listTomlFiles(dir: string): string[] {
@@ -89,10 +96,21 @@ export function loadContractsFromSources(sources: ContractLoadSource[]): Contrac
 export function loadContracts(options: {
   archonHome?: string;
 } = {}): ContractLoadResult {
+  const runtimeDir = getUserContractsDir(options.archonHome);
+  if (existsSync(runtimeDir) && listTomlFiles(runtimeDir).length > 0) {
+    return loadContractsFromSources([
+      {
+        kind: "runtime",
+        dir: runtimeDir,
+      },
+    ]);
+  }
+
   return loadContractsFromSources([
     {
-      kind: "runtime",
-      dir: getUserContractsDir(options.archonHome),
+      kind: "default",
+      dir: getDefaultContractsDir(),
+      required: true,
     },
   ]);
 }

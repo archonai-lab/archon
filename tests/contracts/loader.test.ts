@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  getDefaultContractsDir,
   getUserContractsDir,
   loadContracts,
   loadContractsFromSources,
@@ -44,13 +45,14 @@ describe("contract loader", () => {
     expect(result.contracts.map((entry) => entry.contract.id)).toEqual(["private_review"]);
   });
 
-  it("allows missing runtime contract directory", () => {
+  it("falls back to packaged default contracts when the runtime contract directory is missing", () => {
     const archonHome = tempDir("archon-home-");
 
     const result = loadContracts({ archonHome });
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.contracts).toEqual([]);
+    expect(result.contracts.map((entry) => entry.contract.id)).toContain("codebase_review_task");
+    expect(result.contracts.every((entry) => entry.source === "default")).toBe(true);
   });
 
   it("reports duplicate contract ids in runtime contracts", () => {
@@ -98,5 +100,9 @@ contract_type = "dynamic"
         process.env.HOME = previousHome;
       }
     }
+  });
+
+  it("points packaged default loading at the repo defaults/contracts directory", () => {
+    expect(getDefaultContractsDir()).toContain("defaults/contracts");
   });
 });

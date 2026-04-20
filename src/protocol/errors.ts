@@ -16,7 +16,7 @@ export const ErrorCode = {
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
-/** Static error messages — the ONLY strings ever sent to clients. */
+/** Static error messages — default messages sent to clients unless a safe override is provided. */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   AUTH_REQUIRED: "Authentication required",
   AUTH_FAILED: "Authentication failed",
@@ -40,9 +40,10 @@ export interface ErrorMessage {
 }
 
 /**
- * Create a client-facing error. Message is derived solely from ERROR_MESSAGES —
- * no freeform strings ever reach the wire.
+ * Create a client-facing error. Most callers use the default static message.
+ * Selected local validation surfaces may provide an explicit override when
+ * the message itself is part of the operator contract.
  */
-export function createError(code: ErrorCode): ErrorMessage {
-  return { type: "error", code, message: ERROR_MESSAGES[code] };
+export function createError(code: ErrorCode, message?: string): ErrorMessage {
+  return { type: "error", code, message: message ?? ERROR_MESSAGES[code] };
 }

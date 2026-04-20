@@ -4,12 +4,31 @@ import { tasks, agents } from "../db/schema.js";
 import { hasPermission } from "../hub/permissions.js";
 import { logger } from "../utils/logger.js";
 import { randomUUID } from "node:crypto";
+import { validateCompiledOutput } from "../contracts/compiler.js";
+import { loadContracts } from "../contracts/loader.js";
+import type { ValidationIssue } from "../contracts/types.js";
+import type {
+  TaskAttempt,
+  TaskCompletionContract,
+  TaskContractResult,
+  TaskMetadata,
+  TaskRepoScope,
+} from "./task-metadata.js";
+import { normalizeTaskMetadata, taskMetadataSchema } from "./task-metadata.js";
 
 // --- Types ---
 
 export type TaskStatus = "pending" | "in_progress" | "done" | "failed";
-export type Task = typeof tasks.$inferSelect;
+type TaskRecord = typeof tasks.$inferSelect;
 export type TaskErrorCode = "CLIENT" | "SERVER";
+
+export interface Task extends Omit<TaskRecord, "taskMetadata"> {
+  taskType?: string | null;
+  completionContract?: TaskCompletionContract | null;
+  attempt?: TaskAttempt | null;
+  repoScope?: TaskRepoScope | null;
+  contractResult: TaskContractResult | null;
+}
 
 export interface TaskOk<T> {
   ok: true;
@@ -29,9 +48,11 @@ export interface CreateTaskOpts {
   description?: string;
   assignedTo?: string;
   meetingId?: string;
+  taskMetadata?: TaskMetadata;
 }
 
 export interface UpdateTaskOpts {
+  contractResult?: TaskContractResult;
   status?: TaskStatus;
   result?: string;
 }
@@ -53,6 +74,66 @@ function serverErr(error: string): TaskErr {
   return { ok: false, code: "SERVER", error };
 }
 
+function toTaskView(task: TaskRecord): Task {
+  const metadata = normalizeTaskMetadata(task.taskMetadata);
+  return {
+    id: task.id,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    assignedTo: task.assignedTo,
+    assignedBy: task.assignedBy,
+    meetingId: task.meetingId,
+    result: task.result,
+    version: task.version,
+    changedBy: task.changedBy,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    contractResult: task.contractResult ?? null,
+    taskType: metadata?.taskType ?? null,
+    completionContract: metadata?.completionContract ?? null,
+    attempt: metadata?.attempt ?? null,
+    repoScope: metadata?.repoScope ?? null,
+  };
+}
+
+function formatValidationIssues(issues: ValidationIssue[]): string {
+  return issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ");
+}
+
+function validateTaskContractResult(task: Task, opts: UpdateTaskOpts): TaskErr | null {
+  const requestedContractId = task.completionContract?.contractId?.trim();
+  if (!requestedContractId || opts.status !== "done") return null;
+
+  if (!opts.contractResult) {
+    return clientErr(`Task result failed output contract "${requestedContractId}": completion contract requires contractResult`);
+  }
+  if (opts.contractResult.contractId !== requestedContractId) {
+    return clientErr(`Task result failed output contract "${requestedContractId}": contractResult.contractId must match requested contractId`);
+  }
+
+  const loadResult = loadContracts();
+  const loaded = loadResult.contracts.find((entry) =>
+    entry.contract.id === requestedContractId && entry.contract.contractType === "task"
+  );
+
+  if (!loaded) {
+    const diagnostics = loadResult.diagnostics.map((diagnostic) => diagnostic.message).join("; ");
+    return serverErr(
+      diagnostics
+        ? `Output contract "${requestedContractId}" is not available: ${diagnostics}`
+        : `Output contract "${requestedContractId}" is not available`
+    );
+  }
+
+  const validation = validateCompiledOutput(loaded.contract, opts.contractResult.output);
+  if (!validation.ok) {
+    return clientErr(`Task result failed output contract "${requestedContractId}": ${formatValidationIssues(validation.issues)}`);
+  }
+
+  return null;
+}
+
 // --- Auth helpers ---
 
 export async function canManageTasks(agentId: string): Promise<boolean> {
@@ -61,7 +142,7 @@ export async function canManageTasks(agentId: string): Promise<boolean> {
 
 const GLOBAL_TASK_BOARD_ALLOWLIST = new Set(["ceo", "levia"]);
 
-async function canViewAllTasks(agentId: string): Promise<boolean> {
+export async function canViewAllTasks(agentId: string): Promise<boolean> {
   if (await canManageTasks(agentId)) return true;
   // Temporary bridge until real role-based task board visibility exists.
   // Keep this allowlist narrow and remove it once human/admin board access is modeled explicitly.
@@ -104,6 +185,15 @@ export async function createTask(
     }
   }
 
+  let taskMetadata: TaskMetadata | null = null;
+  if (opts.taskMetadata !== undefined) {
+    const parsed = taskMetadataSchema.safeParse(opts.taskMetadata);
+    if (!parsed.success) {
+      return clientErr(`Invalid task metadata: ${parsed.error.issues[0]?.message ?? "unknown error"}`);
+    }
+    taskMetadata = parsed.data;
+  }
+
   const id = randomUUID();
   const now = new Date();
 
@@ -114,6 +204,7 @@ export async function createTask(
     assignedTo: opts.assignedTo,
     assignedBy: requesterId,
     meetingId: opts.meetingId,
+    taskMetadata,
     changedBy: requesterId,
     createdAt: now,
     updatedAt: now,
@@ -125,7 +216,7 @@ export async function createTask(
   }
 
   logger.info({ taskId: id, requesterId }, "Task created");
-  return { ok: true, data: task };
+  return { ok: true, data: toTaskView(task) };
 }
 
 export async function listTasks(
@@ -148,7 +239,7 @@ export async function listTasks(
     db.query.tasks.findMany({ where: whereClause }),
   ]);
 
-  return { ok: true, data: { tasks: result, total: countResult.length } };
+  return { ok: true, data: { tasks: result.map(toTaskView), total: countResult.length } };
 }
 
 export async function getTask(
@@ -163,12 +254,12 @@ export async function getTask(
     return clientErr(`Task "${taskId}" not found`);
   }
 
-  const isCeo = await canManageTasks(requesterId);
-  if (!isCeo && task.assignedTo !== requesterId) {
+  const canSeeTask = await canViewAllTasks(requesterId);
+  if (!canSeeTask && task.assignedTo !== requesterId) {
     return clientErr("Permission denied: task is not assigned to you");
   }
 
-  return { ok: true, data: task };
+  return { ok: true, data: toTaskView(task) };
 }
 
 export async function updateTask(
@@ -204,11 +295,17 @@ export async function updateTask(
     }
   }
 
+  const contractValidationFailure = validateTaskContractResult(toTaskView(task), opts);
+  if (contractValidationFailure) {
+    return contractValidationFailure;
+  }
+
   const now = new Date();
   await db
     .update(tasks)
     .set({
       ...(opts.status !== undefined ? { status: opts.status } : {}),
+      ...(opts.contractResult !== undefined ? { contractResult: opts.contractResult } : {}),
       ...(opts.result !== undefined ? { result: opts.result } : {}),
       version: task.version + 1,
       changedBy: requesterId,
@@ -222,5 +319,5 @@ export async function updateTask(
   }
 
   logger.info({ taskId, requesterId, newStatus: opts.status }, "Task updated");
-  return { ok: true, data: updated };
+  return { ok: true, data: toTaskView(updated) };
 }
