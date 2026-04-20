@@ -16,6 +16,18 @@ describe("contract compiler", () => {
     expect(compiled.output.fields.self_check.type).toBe("object");
   });
 
+  it("compiles the implementation change task contract", () => {
+    const implementationFixturePath = resolve(
+      import.meta.dirname,
+      "../../defaults/contracts/code_fixing.toml",
+    );
+    const compiled = compileContractToml(readFileSync(implementationFixturePath, "utf-8"));
+    expect(compiled.contractType).toBe("task");
+    expect(compiled.output.fields.summary.type).toBe("string");
+    expect(compiled.output.fields.changed_files.type).toBe("array");
+    expect(compiled.output.fields.verification.type).toBe("array");
+  });
+
   it("rejects unsupported contract types", () => {
     const input = `
 [info]
@@ -96,6 +108,28 @@ normative = false
       ],
       risks: [],
     });
+    expect(result.ok).toBe(true);
+  });
+
+  it("validates a structured implementation result against the compiled implementation schema", () => {
+    const implementationFixturePath = resolve(
+      import.meta.dirname,
+      "../../defaults/contracts/code_fixing.toml",
+    );
+    const compiled = compileContractToml(readFileSync(implementationFixturePath, "utf-8"));
+    const result = validateCompiledOutput(compiled, {
+      summary: "Aligned task get visibility with task board visibility.",
+      changed_files: [
+        "src/tasks/task-crud.ts",
+        "tests/hub/server.test.ts",
+      ],
+      verification: [
+        "npm run build",
+        "npx vitest run tests/tasks/task-crud.test.ts tests/hub/server.test.ts",
+      ],
+      risks: [],
+    });
+
     expect(result.ok).toBe(true);
   });
 });

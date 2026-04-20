@@ -26,6 +26,7 @@ beforeAll(async () => {
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "contract_result" jsonb');
   await db.insert(agents).values([
     { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
+    { id: LEVIA_AGENT, displayName: "Levia", workspacePath: "~/.archon/agents/levia" },
     { id: REGULAR_AGENT, displayName: "Task Test Agent", workspacePath: "/tmp/task-test-agent" },
     { id: OTHER_AGENT, displayName: "Task Test Other", workspacePath: "/tmp/task-test-other" },
   ]).onConflictDoNothing();
@@ -200,13 +201,43 @@ describe("listTasks", () => {
   });
 
   it("levia sees all tasks via temporary global board allowlist", async () => {
+    await createTask(CEO_AGENT, { title: "Levia regular visibility", assignedTo: REGULAR_AGENT });
+    await createTask(CEO_AGENT, { title: "Levia other visibility", assignedTo: OTHER_AGENT });
+
     const result = await listTasks(LEVIA_AGENT);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const titles = result.data.tasks.map((t) => t.title);
-    expect(titles).toContain("For regular");
-    expect(titles).toContain("For other");
+    expect(titles).toContain("Levia regular visibility");
+    expect(titles).toContain("Levia other visibility");
+    expect(result.data.tasks.some((task) => task.assignedTo === OTHER_AGENT)).toBe(true);
+  });
+
+  it("keeps board-viewer task listing broader than non-viewer listing without widening task access", async () => {
+    const viewerVisibleTitle = "Viewer-visible task";
+    const hiddenTitle = "Observer-hidden task";
+
+    await createTask(CEO_AGENT, { title: viewerVisibleTitle, assignedTo: OTHER_AGENT });
+    await createTask(CEO_AGENT, { title: hiddenTitle, assignedTo: REGULAR_AGENT });
+
+    const viewerResult = await listTasks(LEVIA_AGENT);
+    const regularResult = await listTasks(REGULAR_AGENT);
+
+    expect(viewerResult.ok).toBe(true);
+    expect(regularResult.ok).toBe(true);
+    if (!viewerResult.ok || !regularResult.ok) return;
+
+    expect(viewerResult.data.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: viewerVisibleTitle, assignedTo: OTHER_AGENT }),
+      expect.objectContaining({ title: hiddenTitle, assignedTo: REGULAR_AGENT }),
+    ]));
+    expect(regularResult.data.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: hiddenTitle, assignedTo: REGULAR_AGENT }),
+    ]));
+    expect(regularResult.data.tasks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: viewerVisibleTitle }),
+    ]));
   });
 
   it("agent sees only their own tasks", async () => {

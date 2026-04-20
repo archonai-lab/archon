@@ -1,0 +1,51 @@
+[info]
+id = "code_fixing"
+version = "1.0"
+contract_type = "task"
+
+[output]
+type = "object"
+required = true
+normative = true
+
+[output.fields.summary]
+type = "string"
+required = true
+normative = true
+description = "Short factual summary of the implemented change."
+
+[output.fields.changed_files]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Files actually changed in the implementation task."
+
+[output.fields.changed_files.items]
+type = "string"
+required = true
+normative = true
+
+[output.fields.verification]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Verification commands or evidence actually completed for the implementation."
+
+[output.fields.verification.items]
+type = "string"
+required = true
+normative = true
+
+[output.fields.risks]
+type = "array"
+required = true
+normative = true
+allow_empty = true
+description = "Known follow-up risk or uncertainty after the implementation."
+
+[output.fields.risks.items]
+type = "string"
+required = true
+normative = true

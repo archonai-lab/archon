@@ -13,7 +13,7 @@ const TEST_INVITEE_ID = "test-agent-2";
 const TEST_OBSERVER_ID = "test-agent-3";
 const TEST_GLOBAL_VIEWER_ID = "levia";
 const DISCONNECT_GRACE_MS = 200;
-const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID, TEST_OBSERVER_ID, TEST_GLOBAL_VIEWER_ID];
+const TEST_AGENT_IDS = [TEST_AGENT_ID, TEST_INVITEE_ID, TEST_OBSERVER_ID];
 
 let hub: HubServer;
 const openSockets: WebSocket[] = [];
@@ -442,10 +442,12 @@ describe("HubServer", () => {
         assignedTo: TEST_INVITEE_ID,
       }) as { type: string; task: { id: string } };
 
-      const fetched = await sendAndReceive(globalViewer, {
+      const fetchedPromise = waitForMessageType(globalViewer, "task.get.result");
+      globalViewer.send(JSON.stringify({
         type: "task.get",
         taskId: created.task.id,
-      });
+      }));
+      const fetched = await fetchedPromise;
 
       expect(fetched).toMatchObject({
         type: "task.get.result",
@@ -454,6 +456,79 @@ describe("HubServer", () => {
           assignedTo: TEST_INVITEE_ID,
           title: "Task.get visibility check",
         },
+      });
+    });
+
+    it("allows global task-board viewers to list board tasks without widening non-viewer access", async () => {
+      const requester = await connect();
+      const assignee = await connect();
+      const observer = await connect();
+      const globalViewer = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(assignee, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+      });
+      await sendAndReceive(observer, {
+        type: "auth",
+        agentId: TEST_OBSERVER_ID,
+        token: TEST_OBSERVER_ID,
+      });
+      await sendAndReceive(globalViewer, {
+        type: "auth",
+        agentId: TEST_GLOBAL_VIEWER_ID,
+        token: TEST_GLOBAL_VIEWER_ID,
+      });
+
+      await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Global list visibility check",
+        assignedTo: TEST_INVITEE_ID,
+      });
+
+      const viewerListPromise = waitForMessageType(globalViewer, "task.list.result");
+      const observerListPromise = waitForMessageType(observer, "task.list.result");
+      const assigneeListPromise = waitForMessageType(assignee, "task.list.result");
+
+      globalViewer.send(JSON.stringify({ type: "task.list" }));
+      observer.send(JSON.stringify({ type: "task.list" }));
+      assignee.send(JSON.stringify({ type: "task.list" }));
+
+      const viewerList = await viewerListPromise;
+      const observerList = await observerListPromise;
+      const assigneeList = await assigneeListPromise;
+
+      expect(viewerList).toMatchObject({
+        type: "task.list.result",
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            title: "Global list visibility check",
+            assignedTo: TEST_INVITEE_ID,
+          }),
+        ]),
+      });
+
+      expect(observerList).toMatchObject({ type: "task.list.result" });
+      expect((observerList as { tasks: Array<{ title: string }> }).tasks).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ title: "Global list visibility check" }),
+        ]),
+      );
+
+      expect(assigneeList).toMatchObject({
+        type: "task.list.result",
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            title: "Global list visibility check",
+            assignedTo: TEST_INVITEE_ID,
+          }),
+        ]),
       });
     });
   });
