@@ -169,12 +169,18 @@ Minimal task payload delta for this slice:
       "mustExistOnDone": true
     },
     "fields": {
-      "scope": { "type": "string", "required": true, "normative": true },
+      "scope": {
+        "type": "string",
+        "required": true,
+        "normative": true,
+        "description": "What the artifact covers and what is intentionally excluded."
+      },
       "steps": {
         "type": "array",
         "required": true,
         "normative": true,
         "allowEmpty": false,
+        "description": "Ordered plan steps needed to complete the requested work.",
         "items": { "type": "string" }
       },
       "risks": {
@@ -182,6 +188,7 @@ Minimal task payload delta for this slice:
         "required": true,
         "normative": true,
         "allowEmpty": true,
+        "description": "Known risks or follow-up concerns that remain after the plan is written.",
         "items": { "type": "string" }
       },
       "verification": {
@@ -189,6 +196,7 @@ Minimal task payload delta for this slice:
         "required": true,
         "normative": true,
         "allowEmpty": false,
+        "description": "Concrete checks or evidence used to justify the plan.",
         "items": { "type": "string" }
       }
     },
@@ -196,8 +204,6 @@ Minimal task payload delta for this slice:
   }
 }
 ```
-
-In the real implementation, each field entry above must also include `description`.
 
 The runner does not need raw TOML, compiled-schema internals, or task-metadata hint synthesis once this payload exists. That is the point of the normalization boundary.
 
