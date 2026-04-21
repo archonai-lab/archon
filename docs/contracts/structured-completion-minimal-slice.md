@@ -46,6 +46,8 @@ Minimal contract family for the slice:
 
 Free-form narrative still exists, but only inside these structured fields. There is no separate checker-relevant prose blob. The human-readable report is a deterministic hub-side projection from the structured fields into Markdown sections named `Scope`, `Steps`, `Risks`, and `Verification`.
 
+Field semantics must not rely on names alone in this slice. Every field exposed in the runtime completion surface requires a `description` so the runner can tell the agent what the field means, not just what type it has.
+
 Responsibility split for the slice:
 
 - hub
@@ -86,13 +88,15 @@ Chosen runtime shape:
       "scope": {
         "type": "string",
         "required": true,
-        "normative": true
+        "normative": true,
+        "description": "What the artifact covers and what is intentionally excluded."
       },
       "steps": {
         "type": "array",
         "required": true,
         "normative": true,
         "allowEmpty": false,
+        "description": "Ordered plan steps needed to complete the requested work.",
         "items": { "type": "string" }
       },
       "risks": {
@@ -100,6 +104,7 @@ Chosen runtime shape:
         "required": true,
         "normative": true,
         "allowEmpty": true,
+        "description": "Known risks or follow-up concerns that remain after the plan is written.",
         "items": { "type": "string" }
       },
       "verification": {
@@ -107,6 +112,7 @@ Chosen runtime shape:
         "required": true,
         "normative": true,
         "allowEmpty": false,
+        "description": "Concrete checks or evidence used to justify the plan.",
         "items": { "type": "string" }
       }
     },
@@ -119,6 +125,7 @@ Normalization rules:
 
 - This surface is derived from the compiled contract plus task metadata. Raw TOML never crosses the runtime boundary.
 - `fields` contains only the output fields the agent must fill. It does not expose compiler-only internals, prose guidance blobs, or authoring syntax.
+- Every field descriptor requires `description` so the runner can explain field meaning directly from the completion surface instead of relying on hand-maintained prompt lore.
 - `repoRoot` comes from `task.repoScope.targetRepo`. If repo scope is absent, the hub can still expose the surface, but the artifact gate must fail closed when the task is marked `done`.
 - `artifactPolicy` is explicit because artifact location is hub-owned in this slice; the agent never authors the destination path.
 - `artifactFormat` is the only rendering hint needed in this slice. Section names are fixed by task family and rendered by the hub from the structured fields.
@@ -190,6 +197,8 @@ Minimal task payload delta for this slice:
 }
 ```
 
+In the real implementation, each field entry above must also include `description`.
+
 The runner does not need raw TOML, compiled-schema internals, or task-metadata hint synthesis once this payload exists. That is the point of the normalization boundary.
 
 What the runner injects into the prompt:
@@ -201,10 +210,10 @@ Structured completion required.
 Contract ID: plan_artifact_v1
 Repo root: /absolute/repo/root
 Fill exactly these fields:
-- scope: string. Required.
-- steps: string[]. Required. At least 1 item.
-- risks: string[]. Required. Empty allowed.
-- verification: string[]. Required. At least 1 item.
+- scope: string. Required. Meaning: what the artifact covers and what is intentionally excluded.
+- steps: string[]. Required. At least 1 item. Meaning: ordered plan steps needed to complete the requested work.
+- risks: string[]. Required. Empty allowed. Meaning: known risks or follow-up concerns that remain after the plan is written.
+- verification: string[]. Required. At least 1 item. Meaning: concrete checks or evidence used to justify the plan.
 Derived artifact:
 - Hub derives the artifact path from task identity and contract family, then writes markdown with sections: Scope, Steps, Risks, Verification.
 - Section content is projected from the validated structured fields, not authored separately.
@@ -310,6 +319,8 @@ Keep it flat. One artifact path. Four report sections. Arrays only where order m
 2. Expose a normalized completion surface from the hub.
 When a task has `completionContract.contractId = "plan_artifact_v1"`, `task.get` and `task.list` should return the exact `completionSurface` payload defined above. Raw TOML is authoring input, not runtime law.
 
+Field descriptions are mandatory in that runtime surface; without them, agents only see names and types, which is not enough to fill fields reliably.
+
 3. Keep `contractResult` as the only checker-facing agent submission.
 The runner fills structured fields once and submits them once. If `result` remains for compatibility, it should be hub-derived from the same structured data rather than authored independently.
 
@@ -337,6 +348,7 @@ Create one repo-scoped `plan_artifact` task, render the artifact from structured
 
 - The current task metadata already carries completion hints such as `artifactRequired`, `verificationRequired`, and `requiredSections`. If those hints are treated as hidden runtime law instead of exposing a hub-delivered completion surface, checker truth stays implicit and the slice fails its purpose.
 - If the hub exposes the raw compiled contract shape instead of the normalized surface above, runners will couple to compiler internals and the slice will not actually stabilize the runtime boundary.
+- If field descriptions are optional or omitted, agents are forced to infer semantics from names alone and the completion surface stops being self-explanatory.
 - Keeping both `result` and `contractResult` as independently authored outputs will drift. One must be derivative or ignored for contracted tasks.
 - Returning raw compiler internals over protocol can couple runners to implementation details. The hub should expose a stable runtime surface, not the compiler's full internal shape.
 - Repo-root artifact truth depends on explicit repo scope. If repo scope is absent, the artifact gate must fail by explicit policy or stay disabled by explicit policy. Inference is where this goes feral.
@@ -357,6 +369,7 @@ This plan is grounded in the current repo surface, not a blank-sheet redesign.
 Acceptance evidence for the slice:
 
 1. A `plan_artifact` task exposes a machine-readable completion surface before the runner writes anything.
-2. The runner can fill only structured fields, render the artifact from them, and complete the task without separate checker-facing prose.
-3. The checker rejects malformed structured output and rejects an `artifact_path` that is outside repo scope or missing on disk.
-4. The stored task preserves explicit structured truth that downstream code can inspect without parsing headings from a report blob.
+2. Every completion-surface field includes a human-meaningful `description`.
+3. The runner can fill only structured fields and complete the task without separate checker-facing prose.
+4. The checker rejects malformed structured output and rejects a hub-derived artifact that is outside repo scope or missing on disk.
+5. The stored task preserves explicit structured truth that downstream code can inspect without parsing headings from a report blob.
