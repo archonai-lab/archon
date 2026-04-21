@@ -60,7 +60,14 @@ export interface CanonicalContractSchema {
   id: string;
   version: string;
   contractType: ContractType;
-  output: CanonicalObjectField;
+  input?: CanonicalObjectField;
+  inputBinding?: CanonicalContractInputBinding;
+  output?: CanonicalObjectField;
+}
+
+export interface CanonicalContractInputBinding {
+  type: "message_type";
+  messageType: "task.create" | "task.update";
 }
 
 export const ValidationIssueSchema = z.object({

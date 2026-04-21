@@ -1,0 +1,38 @@
+[info]
+id = "task_create_input_fixture"
+version = "1.0"
+contract_type = "task"
+
+[input]
+type = "object"
+required = true
+normative = true
+
+[input.binding]
+type = "message_type"
+message_type = "task.create"
+
+[input.fields.title]
+type = "string"
+required = true
+normative = true
+
+[input.fields.description]
+type = "string"
+required = false
+normative = false
+
+[input.fields.assignedTo]
+type = "string"
+required = false
+normative = false
+
+[input.fields.taskMetadata]
+type = "object"
+required = false
+normative = false
+
+[input.fields.taskMetadata.fields.taskType]
+type = "string"
+required = false
+normative = false
