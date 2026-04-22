@@ -13,7 +13,7 @@ import {
   MeetingApproveMessage,
   MeetingCancelMessage,
 } from "../meeting/types.js";
-import { taskMetadataSchema } from "../tasks/task-metadata.js";
+import { taskMetadataSchema, taskResultMetaSchema } from "../tasks/task-metadata.js";
 
 // --- Auth ---
 
@@ -220,6 +220,8 @@ export const TaskUpdateMessage = z.object({
   status: z.enum(['pending', 'in_progress', 'done', 'failed']).optional(),
   result: z.string().optional(),
   contractResult: taskContractResultSchema.optional(),
+  resultMeta: taskResultMetaSchema.optional(),
+  result_meta: taskResultMetaSchema.optional(),
 });
 
 // --- Ping/Pong ---

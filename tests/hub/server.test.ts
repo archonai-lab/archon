@@ -112,6 +112,7 @@ function expectNoMessageType(
 }
 
 beforeAll(async () => {
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "result_meta" jsonb');
   // Ensure test agents exist in DB
   await db
     .insert(agents)
@@ -527,6 +528,153 @@ describe("HubServer", () => {
           expect.objectContaining({
             title: "Global list visibility check",
             assignedTo: TEST_INVITEE_ID,
+          }),
+        ]),
+      });
+    });
+
+    it("persists structured result_meta through task.update and returns canonical resultMeta on update/get/list", async () => {
+      const requester = await connect();
+      const assignee = await connect();
+      const globalViewer = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(assignee, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+      });
+      await sendAndReceive(globalViewer, {
+        type: "auth",
+        agentId: TEST_GLOBAL_VIEWER_ID,
+        token: TEST_GLOBAL_VIEWER_ID,
+      });
+
+      const created = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Hub result meta persistence",
+        assignedTo: TEST_INVITEE_ID,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      }) as { type: string; task: { id: string } };
+
+      await sendAndReceive(assignee, {
+        type: "task.update",
+        taskId: created.task.id,
+        status: "in_progress",
+      });
+
+      const done = await sendAndReceive(assignee, {
+        type: "task.update",
+        taskId: created.task.id,
+        status: "done",
+        result: "Stored contractResult and result_meta through the hub.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "pass_with_notes",
+            self_check: {
+              repo_root: "/tmp/archon-resultmeta-hub-fix",
+              branch: "task/resultmeta-hub-fix",
+              diff_files: ["src/tasks/task-crud.ts", "src/hub/router.ts"],
+            },
+            findings: [],
+            verification: [
+              { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+            ],
+            risks: [],
+          },
+        },
+        result_meta: {
+          completion: {
+            classifierState: "terminal_valid",
+            salvageCount: 0,
+            salvageBudget: 2,
+            finalDisposition: "native_valid",
+          },
+          source: "issue34-smoke-ae52f195",
+        },
+      }) as { type: string; task: { resultMeta: Record<string, unknown>; contractResult: { output: Record<string, unknown> } } };
+
+      expect(done).toMatchObject({
+          type: "task.updated",
+          task: {
+            resultMeta: {
+              completion: {
+                classifierState: "terminal_valid",
+                salvageCount: 0,
+                salvageBudget: 2,
+                finalDisposition: "native_valid",
+              },
+              source: "issue34-smoke-ae52f195",
+            },
+          contractResult: {
+            output: {
+              verdict: "pass_with_notes",
+            },
+          },
+        },
+      });
+
+      const fetchedPromise = waitForMessageType(globalViewer, "task.get.result");
+      globalViewer.send(JSON.stringify({
+        type: "task.get",
+        taskId: created.task.id,
+      }));
+      const fetched = await fetchedPromise;
+
+      expect(fetched).toMatchObject({
+        type: "task.get.result",
+        task: {
+          id: created.task.id,
+          resultMeta: {
+            completion: {
+              classifierState: "terminal_valid",
+              salvageCount: 0,
+              salvageBudget: 2,
+              finalDisposition: "native_valid",
+            },
+            source: "issue34-smoke-ae52f195",
+          },
+          contractResult: {
+            output: {
+              verdict: "pass_with_notes",
+            },
+          },
+        },
+      });
+
+      const listPromise = waitForMessageType(globalViewer, "task.list.result");
+      globalViewer.send(JSON.stringify({ type: "task.list" }));
+      const listed = await listPromise;
+
+      expect(listed).toMatchObject({
+        type: "task.list.result",
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: created.task.id,
+            resultMeta: {
+              completion: {
+                classifierState: "terminal_valid",
+                salvageCount: 0,
+                salvageBudget: 2,
+                finalDisposition: "native_valid",
+              },
+              source: "issue34-smoke-ae52f195",
+            },
+            contractResult: {
+              output: {
+                verdict: "pass_with_notes",
+              },
+            },
           }),
         ]),
       });

@@ -24,6 +24,7 @@ const OTHER_AGENT = "task-test-other";
 beforeAll(async () => {
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "task_metadata" jsonb');
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "contract_result" jsonb');
+  await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "result_meta" jsonb');
   await db.insert(agents).values([
     { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
     { id: LEVIA_AGENT, displayName: "Levia", workspacePath: "~/.archon/agents/levia" },
@@ -504,6 +505,89 @@ describe("updateTask", () => {
       expect(fetched.ok).toBe(true);
       if (!fetched.ok) return;
       expect(fetched.data.contractResult).toEqual(done.data.contractResult);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("persists resultMeta alongside contractResult and returns it from get/list", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Structured result meta task",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "review",
+          completionContract: {
+            contractId: "codebase_review_task",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const done = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Stored structured output and completion summary.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            verdict: "pass_with_notes",
+            self_check: {
+              repo_root: "/tmp/archon-resultmeta-hub-fix",
+              branch: "task/resultmeta-hub-fix",
+              diff_files: ["src/hub/router.ts"],
+            },
+            findings: [],
+            verification: [
+              { kind: "repo_scope_check", evidence: "reviewed only current execution repo" },
+            ],
+            risks: [],
+          },
+        },
+        resultMeta: {
+          completion: {
+            classifierState: "terminal_valid",
+            salvageCount: 0,
+            salvageBudget: 2,
+            finalDisposition: "native_valid",
+          },
+          summaryPath: "artifacts/issue34-smoke-ae52f195/summary.json",
+        },
+      });
+
+      expect(done.ok).toBe(true);
+      if (!done.ok) return;
+      expect(done.data.resultMeta).toEqual({
+        completion: {
+          classifierState: "terminal_valid",
+          salvageCount: 0,
+          salvageBudget: 2,
+          finalDisposition: "native_valid",
+        },
+        summaryPath: "artifacts/issue34-smoke-ae52f195/summary.json",
+      });
+      expect(done.data.contractResult?.output).toMatchObject({
+        verdict: "pass_with_notes",
+      });
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.resultMeta).toEqual(done.data.resultMeta);
+      expect(fetched.data.contractResult).toEqual(done.data.contractResult);
+
+      const listed = await listTasks(CEO_AGENT);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      expect(listed.data.tasks).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: created.data.id,
+          resultMeta: done.data.resultMeta,
+          contractResult: done.data.contractResult,
+        }),
+      ]));
     } finally {
       restoreHome();
     }
