@@ -1210,12 +1210,15 @@ export class Router {
       status?: 'pending' | 'in_progress' | 'done' | 'failed';
       result?: string;
       contractResult?: { contractId: string; output: Record<string, unknown> };
+      resultMeta?: Record<string, unknown>;
+      result_meta?: Record<string, unknown>;
     }
   ): Promise<void> {
     const updateResult = await updateTask(agentId, msg.taskId, {
       status: msg.status,
       result: msg.result,
       contractResult: msg.contractResult,
+      resultMeta: msg.resultMeta ?? msg.result_meta,
     });
 
     if (!updateResult.ok) {

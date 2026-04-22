@@ -39,6 +39,17 @@ export interface TaskContractResult {
   output: Record<string, unknown>;
 }
 
+export type TaskCompletionTelemetry = {
+  classifierState: string;
+  salvageCount?: number;
+  salvageBudget?: number;
+  finalDisposition: string;
+} & Record<string, unknown>;
+
+export type TaskResultMeta = {
+  completion?: string | TaskCompletionTelemetry;
+} & Record<string, unknown>;
+
 export const taskCompletionContractSchema = z.object({
   taskType: z.string().min(1).optional(),
   deliverableKind: z.string().min(1).optional(),
@@ -65,6 +76,20 @@ export const taskRepoScopeSchema = z.object({
   relatedRepos: z.array(z.string().min(1)).optional(),
   crossRepoPolicy: z.string().min(1).optional(),
 }).strict();
+
+export const taskCompletionTelemetrySchema = z.object({
+  classifierState: z.string().min(1),
+  salvageCount: z.number().int().min(0).optional(),
+  salvageBudget: z.number().int().min(0).optional(),
+  finalDisposition: z.string().min(1),
+}).catchall(z.unknown());
+
+export const taskResultMetaSchema = z.object({
+  completion: z.union([
+    z.string().min(1),
+    taskCompletionTelemetrySchema,
+  ]).optional(),
+}).catchall(z.unknown());
 
 export const taskMetadataSchema = z.object({
   taskType: z.string().min(1).optional(),

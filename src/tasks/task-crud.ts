@@ -12,9 +12,10 @@ import type {
   TaskCompletionContract,
   TaskContractResult,
   TaskMetadata,
+  TaskResultMeta,
   TaskRepoScope,
 } from "./task-metadata.js";
-import { normalizeTaskMetadata, taskMetadataSchema } from "./task-metadata.js";
+import { normalizeTaskMetadata, taskMetadataSchema, taskResultMetaSchema } from "./task-metadata.js";
 
 // --- Types ---
 
@@ -28,6 +29,7 @@ export interface Task extends Omit<TaskRecord, "taskMetadata"> {
   attempt?: TaskAttempt | null;
   repoScope?: TaskRepoScope | null;
   contractResult: TaskContractResult | null;
+  resultMeta: TaskResultMeta | null;
 }
 
 export interface TaskOk<T> {
@@ -53,6 +55,7 @@ export interface CreateTaskOpts {
 
 export interface UpdateTaskOpts {
   contractResult?: TaskContractResult;
+  resultMeta?: TaskResultMeta;
   status?: TaskStatus;
   result?: string;
 }
@@ -76,6 +79,7 @@ function serverErr(error: string): TaskErr {
 
 function toTaskView(task: TaskRecord): Task {
   const metadata = normalizeTaskMetadata(task.taskMetadata);
+  const parsedResultMeta = taskResultMetaSchema.safeParse(task.resultMeta);
   return {
     id: task.id,
     title: task.title,
@@ -90,6 +94,7 @@ function toTaskView(task: TaskRecord): Task {
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     contractResult: task.contractResult ?? null,
+    resultMeta: parsedResultMeta.success ? parsedResultMeta.data : null,
     taskType: metadata?.taskType ?? null,
     completionContract: metadata?.completionContract ?? null,
     attempt: metadata?.attempt ?? null,
@@ -300,12 +305,21 @@ export async function updateTask(
     return contractValidationFailure;
   }
 
+  if (opts.resultMeta !== undefined) {
+    const parsedResultMeta = taskResultMetaSchema.safeParse(opts.resultMeta);
+    if (!parsedResultMeta.success) {
+      return clientErr(`Invalid task result metadata: ${parsedResultMeta.error.issues[0]?.message ?? "unknown error"}`);
+    }
+    opts = { ...opts, resultMeta: parsedResultMeta.data };
+  }
+
   const now = new Date();
   await db
     .update(tasks)
     .set({
       ...(opts.status !== undefined ? { status: opts.status } : {}),
       ...(opts.contractResult !== undefined ? { contractResult: opts.contractResult } : {}),
+      ...(opts.resultMeta !== undefined ? { resultMeta: opts.resultMeta } : {}),
       ...(opts.result !== undefined ? { result: opts.result } : {}),
       version: task.version + 1,
       changedBy: requesterId,
