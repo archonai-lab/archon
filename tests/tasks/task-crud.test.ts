@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
@@ -57,6 +57,31 @@ function withSeededArchonHome(): () => void {
       process.env.HOME = previousHome;
     }
   };
+}
+
+function writeSummaryContract(contractId: string): void {
+  const home = process.env.HOME;
+  if (!home) throw new Error("HOME is required for runtime contract tests");
+
+  const contractsDir = join(home, ".archon", "contracts");
+  mkdirSync(contractsDir, { recursive: true });
+  writeFileSync(join(contractsDir, `${contractId}.toml`), [
+    "[info]",
+    `id = "${contractId}"`,
+    'version = "1.0"',
+    'contract_type = "task"',
+    "",
+    "[output]",
+    'type = "object"',
+    "required = true",
+    "normative = true",
+    "",
+    "[output.fields.summary]",
+    'type = "string"',
+    "required = true",
+    "normative = true",
+    "",
+  ].join("\n"));
 }
 
 // --- Status transition validation ---
@@ -665,74 +690,461 @@ describe("updateTask", () => {
     }
   });
 
-  it("finalizes plan_artifact_v1 by rendering and persisting a hub-derived artifact before done", async () => {
-    const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
-    const created = await createTask(CEO_AGENT, {
-      title: "Plan artifact finalize",
-      assignedTo: REGULAR_AGENT,
-      taskMetadata: {
-        taskType: "implementation",
-        completionContract: {
-          contractId: "plan_artifact_v1",
-        },
-        repoScope: {
-          targetRepo,
-        },
-      },
-    });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
-    const done = await updateTask(REGULAR_AGENT, created.data.id, {
-      status: "done",
-      result: "agent-authored prose should not win",
-      contractResult: {
-        contractId: "plan_artifact_v1",
-        output: {
-          scope: "Implement finalize slice for plan artifact tasks.",
-          steps: [
-            "Validate structured output.",
-            "Render the artifact from structured fields.",
-            "Persist artifact and task state before done.",
-          ],
-          risks: ["Database/file persistence is not cross-resource atomic."],
-          verification: [
-            "Run targeted task finalize tests.",
-            "Confirm the artifact path stays inside repo scope.",
-          ],
-        },
-      },
+  it("dispatches done through a registered finalize handler for any contract id", async () => {
+    const restoreHome = withSeededArchonHome();
+    const contractId = "generic_finalize_test";
+    writeSummaryContract(contractId);
+    const finalizeSpy = vi.fn((context: taskFinalize.TaskFinalizeContext): taskFinalize.TaskFinalizeResult => ({
+      result: `finalized:${String(context.contractResult.output.summary)}`,
       resultMeta: {
-        completion: {
-          classifierState: "terminal_valid",
-          finalDisposition: "native_valid",
-        },
-        source: "agent-supplied-meta",
+        ...(context.resultMeta ?? {}),
+        finalizedBy: "generic-handler",
       },
+      artifacts: [],
+    }));
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      finalize: finalizeSpy,
     });
 
-    expect(done.ok).toBe(true);
-    if (!done.ok) return;
-    expect(done.data.status).toBe("done");
-    expect(done.data.result).toContain("# Plan Artifact");
-    expect(done.data.result).toContain("## Scope");
-    expect(done.data.result).toContain("Implement finalize slice for plan artifact tasks.");
-    expect(done.data.result).not.toContain("agent-authored prose should not win");
-    expect(done.data.resultMeta).toMatchObject({
-      source: "agent-supplied-meta",
-      artifactPath: join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"),
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize dispatch",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const done = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "agent prose should not win",
+        contractResult: {
+          contractId,
+          output: {
+            summary: "from handler",
+          },
+        },
+        resultMeta: {
+          source: "agent-meta",
+        },
+      });
+
+      expect(done.ok).toBe(true);
+      if (!done.ok) return;
+      expect(finalizeSpy).toHaveBeenCalledTimes(1);
+      expect(done.data.status).toBe("done");
+      expect(done.data.result).toBe("finalized:from handler");
+      expect(done.data.resultMeta).toMatchObject({
+        source: "agent-meta",
+        finalizedBy: "generic-handler",
+      });
+      expect(done.data.contractResult).toEqual({
+        contractId,
+        output: {
+          summary: "from handler",
+        },
+      });
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("rejects done for a registered finalize handler when contractResult is missing", async () => {
+    const restoreHome = withSeededArchonHome();
+    const contractId = "generic_finalize_missing_guard";
+    writeSummaryContract(contractId);
+    const finalizeSpy = vi.fn((): taskFinalize.TaskFinalizeResult => ({
+      result: "should not run",
+      resultMeta: {},
+      artifacts: [],
+    }));
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      finalize: finalizeSpy,
     });
 
-    const artifactPath = done.data.resultMeta?.artifactPath;
-    expect(typeof artifactPath).toBe("string");
-    expect(readFileSync(String(artifactPath), "utf-8")).toBe(done.data.result);
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize missing result",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
 
-    const fetched = await getTask(REGULAR_AGENT, created.data.id);
-    expect(fetched.ok).toBe(true);
-    if (!fetched.ok) return;
-    expect(fetched.data.contractResult).toEqual(done.data.contractResult);
-    expect(fetched.data.result).toBe(done.data.result);
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "should not finalize",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/requires contractResult/i);
+      expect(finalizeSpy).not.toHaveBeenCalled();
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("rejects done for a registered finalize handler when contractResult.contractId does not match", async () => {
+    const restoreHome = withSeededArchonHome();
+    const contractId = "generic_finalize_mismatch_guard";
+    writeSummaryContract(contractId);
+    const finalizeSpy = vi.fn((): taskFinalize.TaskFinalizeResult => ({
+      result: "should not run",
+      resultMeta: {},
+      artifacts: [],
+    }));
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      finalize: finalizeSpy,
+    });
+
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize mismatch",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId: "other_contract",
+          output: {
+            summary: "wrong id",
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/contractResult\.contractId must match requested contractId/i);
+      expect(finalizeSpy).not.toHaveBeenCalled();
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("rejects invalid compiled output before a registered finalize handler runs", async () => {
+    const restoreHome = withSeededArchonHome();
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-generic-finalize-invalid-"));
+    const contractId = "generic_finalize_invalid_output";
+    writeSummaryContract(contractId);
+    const artifactPath = "artifacts/generic/invalid.md";
+    const finalizeSpy = vi.fn((): taskFinalize.TaskFinalizeResult => ({
+      result: "should not run",
+      resultMeta: {},
+      artifacts: [
+        {
+          path: artifactPath,
+          content: "should not write",
+        },
+      ],
+    }));
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      finalize: finalizeSpy,
+    });
+
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize invalid output",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+          repoScope: {
+            targetRepo,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId,
+          output: {
+            notSummary: "invalid",
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/output\.summary/i);
+      expect(finalizeSpy).not.toHaveBeenCalled();
+      expect(existsSync(join(targetRepo, artifactPath))).toBe(false);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("rolls back only newly created generic artifacts when a later artifact write fails", async () => {
+    const restoreHome = withSeededArchonHome();
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-generic-finalize-partial-"));
+    const contractId = "generic_finalize_partial_artifact_failure";
+    writeSummaryContract(contractId);
+    const createdArtifact = "artifacts/generic/new.md";
+    const existingArtifact = "artifacts/generic/existing.md";
+    mkdirSync(join(targetRepo, "artifacts", "generic"), { recursive: true });
+    writeFileSync(join(targetRepo, existingArtifact), "prior bytes");
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      requiresRepoScope: true,
+      finalize: (): taskFinalize.TaskFinalizeResult => ({
+        result: "should not persist",
+        resultMeta: {},
+        artifacts: [
+          {
+            path: createdArtifact,
+            content: "created in this attempt",
+          },
+          {
+            path: existingArtifact,
+            content: "must not overwrite",
+          },
+        ],
+      }),
+    });
+
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize partial artifact failure",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+          repoScope: {
+            targetRepo,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId,
+          output: {
+            summary: "valid",
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/failed to persist finalized artifact/i);
+      expect(existsSync(join(targetRepo, createdArtifact))).toBe(false);
+      expect(readFileSync(join(targetRepo, existingArtifact), "utf-8")).toBe("prior bytes");
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("rejects an existing generic artifact path without overwrite and keeps the task non-terminal", async () => {
+    const restoreHome = withSeededArchonHome();
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-generic-finalize-existing-"));
+    const contractId = "generic_finalize_existing_artifact";
+    writeSummaryContract(contractId);
+    const artifactPath = "artifacts/generic/existing.md";
+    mkdirSync(join(targetRepo, "artifacts", "generic"), { recursive: true });
+    writeFileSync(join(targetRepo, artifactPath), "prior bytes");
+    const unregister = taskFinalize.registerFinalizeHandler({
+      contractId,
+      requiresRepoScope: true,
+      finalize: (): taskFinalize.TaskFinalizeResult => ({
+        result: "should not persist",
+        resultMeta: {},
+        artifacts: [
+          {
+            path: artifactPath,
+            content: "new bytes",
+          },
+        ],
+      }),
+    });
+
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Generic finalize existing artifact",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId,
+          },
+          repoScope: {
+            targetRepo,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId,
+          output: {
+            summary: "valid",
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/failed to persist finalized artifact/i);
+      expect(readFileSync(join(targetRepo, artifactPath), "utf-8")).toBe("prior bytes");
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      unregister();
+      restoreHome();
+    }
+  });
+
+  it("finalizes plan_artifact_v1 by rendering and persisting a hub-derived artifact before done", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
+      const created = await createTask(CEO_AGENT, {
+        title: "Plan artifact finalize",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+          repoScope: {
+            targetRepo,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const done = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "agent-authored prose should not win",
+        contractResult: {
+          contractId: "plan_artifact_v1",
+          output: {
+            scope: "Implement finalize slice for plan artifact tasks.",
+            steps: [
+              "Validate structured output.",
+              "Render the artifact from structured fields.",
+              "Persist artifact and task state before done.",
+            ],
+            risks: ["Database/file persistence is not cross-resource atomic."],
+            verification: [
+              "Run targeted task finalize tests.",
+              "Confirm the artifact path stays inside repo scope.",
+            ],
+          },
+        },
+        resultMeta: {
+          completion: {
+            classifierState: "terminal_valid",
+            finalDisposition: "native_valid",
+          },
+          source: "agent-supplied-meta",
+        },
+      });
+
+      expect(done.ok).toBe(true);
+      if (!done.ok) return;
+      expect(done.data.status).toBe("done");
+      expect(done.data.result).toContain("# Plan Artifact");
+      expect(done.data.result).toContain("## Scope");
+      expect(done.data.result).toContain("Implement finalize slice for plan artifact tasks.");
+      expect(done.data.result).not.toContain("agent-authored prose should not win");
+      expect(done.data.resultMeta).toMatchObject({
+        source: "agent-supplied-meta",
+        artifactPath: join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"),
+      });
+
+      const artifactPath = done.data.resultMeta?.artifactPath;
+      expect(typeof artifactPath).toBe("string");
+      expect(readFileSync(String(artifactPath), "utf-8")).toBe(done.data.result);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.contractResult).toEqual(done.data.contractResult);
+      expect(fetched.data.result).toBe(done.data.result);
+    } finally {
+      restoreHome();
+    }
   });
 
   it("rejects done for plan_artifact_v1 when contractResult is missing and keeps the task non-terminal", async () => {
@@ -819,6 +1231,7 @@ describe("updateTask", () => {
   });
 
   it("keeps the task non-done when the hub-derived artifact path escapes repo scope", async () => {
+    const restoreHome = withSeededArchonHome();
     const created = await createTask(CEO_AGENT, {
       title: "Plan artifact repo escape",
       assignedTo: REGULAR_AGENT,
@@ -833,7 +1246,10 @@ describe("updateTask", () => {
       },
     });
     expect(created.ok).toBe(true);
-    if (!created.ok) return;
+    if (!created.ok) {
+      restoreHome();
+      return;
+    }
 
     await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
     const resolveSpy = vi.spyOn(taskFinalize.taskFinalizeOps, "resolveArtifactPath").mockImplementation(() => {
@@ -864,10 +1280,12 @@ describe("updateTask", () => {
       expect(fetched.data.resultMeta).toBeNull();
     } finally {
       resolveSpy.mockRestore();
+      restoreHome();
     }
   });
 
   it("keeps the task non-done when artifact persistence fails", async () => {
+    const restoreHome = withSeededArchonHome();
     const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
     const created = await createTask(CEO_AGENT, {
       title: "Plan artifact write failure",
@@ -883,10 +1301,13 @@ describe("updateTask", () => {
       },
     });
     expect(created.ok).toBe(true);
-    if (!created.ok) return;
+    if (!created.ok) {
+      restoreHome();
+      return;
+    }
 
     await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
-    const persistSpy = vi.spyOn(taskFinalize, "persistArtifact").mockRejectedValue(new Error("disk full"));
+    const persistSpy = vi.spyOn(taskFinalize, "persistArtifacts").mockRejectedValue(new Error("disk full"));
     try {
       const result = await updateTask(REGULAR_AGENT, created.data.id, {
         status: "done",
@@ -915,6 +1336,7 @@ describe("updateTask", () => {
       expect(existsSync(join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"))).toBe(false);
     } finally {
       persistSpy.mockRestore();
+      restoreHome();
     }
   });
 });
