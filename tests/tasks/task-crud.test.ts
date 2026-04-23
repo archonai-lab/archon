@@ -623,6 +623,174 @@ describe("updateTask", () => {
     }
   });
 
+  it("rejects prose-only done for plan_artifact_v1 and leaves the task in_progress", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Plan artifact requires structured output",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Plan drafted in prose only.",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/requires contractResult/i);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects done for plan_artifact_v1 when contractResult.contractId does not match", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Plan artifact contract id mismatch",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Structured plan attached.",
+        contractResult: {
+          contractId: "codebase_review_task",
+          output: {
+            scope: "Phase 2 validation",
+            steps: ["Add task validation tests"],
+            risks: [],
+            verification: ["Run task validation tests"],
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/contractResult\.contractId must match requested contractId/i);
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects malformed plan_artifact_v1 output and does not partially mark the task done", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Malformed plan artifact output",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Attempted structured plan.",
+        contractResult: {
+          contractId: "plan_artifact_v1",
+          output: {
+            scope: "Phase 2 validation",
+            steps: "Add regression coverage",
+            risks: [],
+          } as never,
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/output\.steps: expected array/i);
+      expect(result.error).toMatch(/output\.verification: required field is missing/i);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      restoreHome();
+    }
+  });
+
+  it("rejects wrong field types for plan_artifact_v1 and leaves the task in_progress", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const created = await createTask(CEO_AGENT, {
+        title: "Plan artifact wrong field type",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        result: "Attempted structured plan with wrong scalar types.",
+        contractResult: {
+          contractId: "plan_artifact_v1",
+          output: {
+            scope: 76,
+            steps: ["Add validation"],
+            risks: [],
+            verification: ["Run task CRUD tests"],
+          } as never,
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/output\.scope: expected string/i);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.contractResult).toBeNull();
+    } finally {
+      restoreHome();
+    }
+  });
+
   it("rejects contract output when required repo-scope proof is missing", async () => {
     const restoreHome = withSeededArchonHome();
     try {
