@@ -28,6 +28,63 @@ normative = true
 values = ["pass", "needs_changes"]
 `;
 
+const runtimePlanArtifactContract = `
+[info]
+id = "plan_artifact_v1"
+version = "1.0"
+contract_type = "task"
+
+[output]
+type = "object"
+required = true
+normative = true
+
+[output.fields.scope]
+type = "string"
+required = true
+normative = true
+description = "Runtime override scope."
+
+[output.fields.steps]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Runtime override steps."
+
+[output.fields.steps.items]
+type = "string"
+required = true
+normative = true
+description = "Runtime override step."
+
+[output.fields.risks]
+type = "array"
+required = true
+normative = true
+allow_empty = true
+description = "Runtime override risks."
+
+[output.fields.risks.items]
+type = "string"
+required = true
+normative = true
+description = "Runtime override risk."
+
+[output.fields.verification]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Runtime override verification."
+
+[output.fields.verification.items]
+type = "string"
+required = true
+normative = true
+description = "Runtime override verification step."
+`;
+
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
@@ -42,7 +99,11 @@ describe("contract loader", () => {
     const result = loadContracts({ archonHome });
 
     expect(result.diagnostics).toEqual([]);
-    expect(result.contracts.map((entry) => entry.contract.id)).toEqual(["private_review"]);
+    expect(result.contracts.map((entry) => entry.contract.id)).toContain("private_review");
+    expect(result.contracts.map((entry) => entry.contract.id)).toContain("plan_artifact_v1");
+    expect(
+      result.contracts.find((entry) => entry.contract.id === "private_review")?.source,
+    ).toBe("runtime");
   });
 
   it("falls back to packaged default contracts when the runtime contract directory is missing", () => {
@@ -53,6 +114,39 @@ describe("contract loader", () => {
     expect(result.diagnostics).toEqual([]);
     expect(result.contracts.map((entry) => entry.contract.id)).toContain("codebase_review_task");
     expect(result.contracts.every((entry) => entry.source === "default")).toBe(true);
+  });
+
+  it("keeps built-in contracts when runtime adds unrelated contracts", () => {
+    const archonHome = tempDir("archon-home-");
+    const userDir = getUserContractsDir(archonHome);
+    mkdirSync(userDir, { recursive: true });
+    writeFileSync(join(userDir, "private.toml"), validContract);
+
+    const result = loadContracts({ archonHome });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(result.contracts.map((entry) => entry.contract.id)).toContain("private_review");
+    expect(result.contracts.map((entry) => entry.contract.id)).toContain("plan_artifact_v1");
+    expect(
+      result.contracts.find((entry) => entry.contract.id === "plan_artifact_v1")?.source,
+    ).toBe("default");
+  });
+
+  it("applies runtime precedence per contract id without dropping unrelated defaults", () => {
+    const archonHome = tempDir("archon-home-");
+    const userDir = getUserContractsDir(archonHome);
+    mkdirSync(userDir, { recursive: true });
+    writeFileSync(join(userDir, "plan_artifact_v1.toml"), runtimePlanArtifactContract);
+
+    const result = loadContracts({ archonHome });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      result.contracts.find((entry) => entry.contract.id === "plan_artifact_v1")?.source,
+    ).toBe("runtime");
+    expect(
+      result.contracts.find((entry) => entry.contract.id === "codebase_review_task")?.source,
+    ).toBe("default");
   });
 
   it("reports duplicate contract ids in runtime contracts", () => {

@@ -51,7 +51,7 @@ function listTomlFiles(dir: string): string[] {
 export function loadContractsFromSources(sources: ContractLoadSource[]): ContractLoadResult {
   const contracts: LoadedContract[] = [];
   const diagnostics: ContractLoadDiagnostic[] = [];
-  const seenIds = new Map<string, LoadedContract>();
+  const seenIds = new Map<string, { loaded: LoadedContract; index: number }>();
 
   for (const source of sources) {
     if (!existsSync(source.dir)) {
@@ -68,17 +68,25 @@ export function loadContractsFromSources(sources: ContractLoadSource[]): Contrac
       try {
         const contract = compileContractToml(readFileSync(filePath, "utf-8"));
         const existing = seenIds.get(contract.id);
-        if (existing) {
+        if (existing && existing.loaded.source === source.kind) {
           diagnostics.push({
             source: source.kind,
             filePath,
-            message: `duplicate contract id "${contract.id}" already loaded from ${existing.filePath}`,
+            message: `duplicate contract id "${contract.id}" already loaded from ${existing.loaded.filePath}`,
           });
           continue;
         }
 
         const loaded = { contract, source: source.kind, filePath };
-        seenIds.set(contract.id, loaded);
+        if (existing) {
+          // Precedence is per contract id: a runtime override replaces only the
+          // matching built-in contract and leaves unrelated defaults intact.
+          contracts[existing.index] = loaded;
+          seenIds.set(contract.id, { loaded, index: existing.index });
+          continue;
+        }
+
+        seenIds.set(contract.id, { loaded, index: contracts.length });
         contracts.push(loaded);
       } catch (error) {
         diagnostics.push({
@@ -97,20 +105,15 @@ export function loadContracts(options: {
   archonHome?: string;
 } = {}): ContractLoadResult {
   const runtimeDir = getUserContractsDir(options.archonHome);
-  if (existsSync(runtimeDir) && listTomlFiles(runtimeDir).length > 0) {
-    return loadContractsFromSources([
-      {
-        kind: "runtime",
-        dir: runtimeDir,
-      },
-    ]);
-  }
-
   return loadContractsFromSources([
     {
       kind: "default",
       dir: getDefaultContractsDir(),
       required: true,
+    },
+    {
+      kind: "runtime",
+      dir: runtimeDir,
     },
   ]);
 }
