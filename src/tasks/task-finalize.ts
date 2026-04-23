@@ -75,6 +75,9 @@ export function registerFinalizeHandler(handler: TaskFinalizeHandler): () => voi
   if (!contractId) {
     throw new Error("Finalize handler requires contractId");
   }
+  if (finalizeHandlers.has(contractId)) {
+    throw new Error(`Finalize handler already registered for contractId: ${contractId}`);
+  }
 
   const normalizedHandler = { ...handler, contractId };
   finalizeHandlers.set(contractId, normalizedHandler);
