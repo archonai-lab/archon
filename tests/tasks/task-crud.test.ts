@@ -757,6 +757,34 @@ describe("updateTask", () => {
     }
   });
 
+  it("rejects duplicate finalize handler registration and keeps the original handler", () => {
+    const contractId = "generic_finalize_duplicate_guard";
+    const originalHandler = {
+      contractId,
+      finalize: vi.fn((): taskFinalize.TaskFinalizeResult => ({
+        result: "original",
+        resultMeta: {},
+        artifacts: [],
+      })),
+    };
+    const duplicateHandler = {
+      contractId,
+      finalize: vi.fn((): taskFinalize.TaskFinalizeResult => ({
+        result: "duplicate",
+        resultMeta: {},
+        artifacts: [],
+      })),
+    };
+    const unregister = taskFinalize.registerFinalizeHandler(originalHandler);
+
+    try {
+      expect(() => taskFinalize.registerFinalizeHandler(duplicateHandler)).toThrow(/already registered/i);
+      expect(taskFinalize.getFinalizeHandler(contractId)?.finalize).toBe(originalHandler.finalize);
+    } finally {
+      unregister();
+    }
+  });
+
   it("rejects done for a registered finalize handler when contractResult is missing", async () => {
     const restoreHome = withSeededArchonHome();
     const contractId = "generic_finalize_missing_guard";
