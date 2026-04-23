@@ -110,16 +110,6 @@ function formatValidationIssues(issues: ValidationIssue[]): string {
 function validateTaskContractResult(task: Task, opts: UpdateTaskOpts): TaskErr | null {
   const requestedContractId = task.completionContract?.contractId?.trim();
   if (!requestedContractId || opts.status !== "done") return null;
-  if (requestedContractId === taskFinalize.PLAN_ARTIFACT_CONTRACT_ID) {
-    if (!opts.contractResult) {
-      return clientErr(`Task result failed output contract "${requestedContractId}": completion contract requires contractResult`);
-    }
-    if (opts.contractResult.contractId !== requestedContractId) {
-      return clientErr(`Task result failed output contract "${requestedContractId}": contractResult.contractId must match requested contractId`);
-    }
-    return null;
-  }
-
   if (!opts.contractResult) {
     return clientErr(`Task result failed output contract "${requestedContractId}": completion contract requires contractResult`);
   }
@@ -159,24 +149,31 @@ async function finalizeTaskUpdate(
   opts: UpdateTaskOpts,
 ): Promise<TaskResult<Task> | null> {
   const requestedContractId = task.completionContract?.contractId?.trim();
-  if (opts.status !== "done" || requestedContractId !== taskFinalize.PLAN_ARTIFACT_CONTRACT_ID || !opts.contractResult) {
+  const handler = requestedContractId ? taskFinalize.getFinalizeHandler(requestedContractId) : null;
+  if (opts.status !== "done" || !handler || !opts.contractResult) {
     return null;
   }
 
   const repoRoot = getFinalizeRepoRoot(task);
-  if (!repoRoot) {
+  if (handler.requiresRepoScope && !repoRoot) {
     return clientErr("Task finalize requires repoScope.targetRepo");
   }
 
-  let finalized;
+  let finalized: taskFinalize.TaskFinalizeResult;
   try {
-    finalized = taskFinalize.finalizePlanArtifact(repoRoot, task.id, opts.contractResult.output, opts.resultMeta);
+    finalized = handler.finalize({
+      taskId: task.id,
+      repoRoot,
+      contractResult: opts.contractResult,
+      resultMeta: opts.resultMeta,
+    });
   } catch (error) {
     return clientErr(error instanceof Error ? error.message : String(error));
   }
 
+  let createdArtifacts: string[];
   try {
-    await taskFinalize.persistArtifact(repoRoot, finalized.artifactPath, finalized.renderedArtifact);
+    createdArtifacts = await taskFinalize.persistArtifacts(repoRoot ?? "", finalized.artifacts);
   } catch (error) {
     return serverErr(`Failed to persist finalized artifact: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -190,7 +187,7 @@ async function finalizeTaskUpdate(
           status: "done",
           contractResult: opts.contractResult,
           resultMeta: finalized.resultMeta,
-          result: finalized.renderedArtifact,
+          result: finalized.result,
           version: task.version + 1,
           changedBy: requesterId,
           updatedAt: now,
@@ -198,15 +195,17 @@ async function finalizeTaskUpdate(
         .where(eq(tasks.id, task.id));
     });
   } catch (error) {
-    await taskFinalize.removeArtifact(repoRoot, finalized.artifactPath).catch((cleanupError) => {
-      logger.warn(
-        {
-          taskId: task.id,
-          cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-        },
-        "Failed to clean up finalized artifact after database error",
-      );
-    });
+    await Promise.all(createdArtifacts.map((artifactPath) =>
+      taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
+        logger.warn(
+          {
+            taskId: task.id,
+            cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          },
+          "Failed to clean up finalized artifact after database error",
+        );
+      })
+    ));
     return serverErr(`Failed to persist finalized task result: ${error instanceof Error ? error.message : String(error)}`);
   }
 

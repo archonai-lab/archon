@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { z } from "zod";
-import type { TaskResultMeta } from "./task-metadata.js";
+import type { TaskContractResult, TaskResultMeta } from "./task-metadata.js";
 
 export const PLAN_ARTIFACT_CONTRACT_ID = "plan_artifact_v1";
 
@@ -18,6 +18,30 @@ export interface PlanFinalizeResult {
   artifactPath: string;
   renderedArtifact: string;
   resultMeta: TaskResultMeta;
+}
+
+export interface TaskFinalizeArtifact {
+  path: string;
+  content: string;
+}
+
+export interface TaskFinalizeContext {
+  taskId: string;
+  repoRoot: string | null;
+  contractResult: TaskContractResult;
+  resultMeta?: TaskResultMeta;
+}
+
+export interface TaskFinalizeResult {
+  result: string;
+  resultMeta: TaskResultMeta;
+  artifacts: TaskFinalizeArtifact[];
+}
+
+export interface TaskFinalizeHandler {
+  contractId: string;
+  requiresRepoScope?: boolean;
+  finalize(context: TaskFinalizeContext): TaskFinalizeResult;
 }
 
 export const taskFinalizeOps = {
@@ -44,6 +68,27 @@ export const taskFinalizeOps = {
   },
 };
 
+const finalizeHandlers = new Map<string, TaskFinalizeHandler>();
+
+export function registerFinalizeHandler(handler: TaskFinalizeHandler): () => void {
+  const contractId = handler.contractId.trim();
+  if (!contractId) {
+    throw new Error("Finalize handler requires contractId");
+  }
+
+  const normalizedHandler = { ...handler, contractId };
+  finalizeHandlers.set(contractId, normalizedHandler);
+  return () => {
+    if (finalizeHandlers.get(contractId) === normalizedHandler) {
+      finalizeHandlers.delete(contractId);
+    }
+  };
+}
+
+export function getFinalizeHandler(contractId: string): TaskFinalizeHandler | null {
+  return finalizeHandlers.get(contractId.trim()) ?? null;
+}
+
 export function finalizePlanArtifact(
   repoRoot: string,
   taskId: string,
@@ -62,6 +107,32 @@ export function finalizePlanArtifact(
     },
   };
 }
+
+registerFinalizeHandler({
+  contractId: PLAN_ARTIFACT_CONTRACT_ID,
+  requiresRepoScope: true,
+  finalize(context) {
+    if (!context.repoRoot) {
+      throw new Error("Finalize requires repoScope.targetRepo");
+    }
+    const finalized = finalizePlanArtifact(
+      context.repoRoot,
+      context.taskId,
+      context.contractResult.output,
+      context.resultMeta,
+    );
+    return {
+      result: finalized.renderedArtifact,
+      resultMeta: finalized.resultMeta,
+      artifacts: [
+        {
+          path: finalized.artifactPath,
+          content: finalized.renderedArtifact,
+        },
+      ],
+    };
+  },
+});
 
 export function derivePlanArtifactPath(taskId: string): string {
   return taskFinalizeOps.derivePlanArtifactPath(taskId);
@@ -100,7 +171,24 @@ export function resolveArtifactPath(repoRoot: string, relativeArtifactPath: stri
 export async function persistArtifact(repoRoot: string, relativeArtifactPath: string, content: string): Promise<void> {
   const artifactPath = resolveArtifactPath(repoRoot, relativeArtifactPath);
   await mkdir(dirname(artifactPath), { recursive: true });
-  await writeFile(artifactPath, content, "utf-8");
+  await writeFile(artifactPath, content, { encoding: "utf-8", flag: "wx" });
+}
+
+export async function persistArtifacts(
+  repoRoot: string,
+  artifacts: TaskFinalizeArtifact[],
+): Promise<string[]> {
+  const created: string[] = [];
+  try {
+    for (const artifact of artifacts) {
+      await persistArtifact(repoRoot, artifact.path, artifact.content);
+      created.push(artifact.path);
+    }
+    return created;
+  } catch (error) {
+    await Promise.allSettled(created.map((artifactPath) => removeArtifact(repoRoot, artifactPath)));
+    throw error;
+  }
 }
 
 export async function removeArtifact(repoRoot: string, relativeArtifactPath: string): Promise<void> {
