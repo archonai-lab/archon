@@ -1,7 +1,7 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, closeConnection } from "../../src/db/connection.js";
 import { agents, permissions, tasks } from "../../src/db/schema.js";
@@ -15,6 +15,7 @@ import {
 import type { TaskErr } from "../../src/tasks/task-crud.js";
 import { grantPermission } from "../../src/hub/permissions.js";
 import { ensureArchonHome } from "../../src/setup.js";
+import * as taskFinalize from "../../src/tasks/task-finalize.js";
 
 const CEO_AGENT = "task-test-ceo";
 const LEVIA_AGENT = "levia";
@@ -661,6 +662,259 @@ describe("updateTask", () => {
       expect(result.error).toMatch(/output\.self_check/i);
     } finally {
       restoreHome();
+    }
+  });
+
+  it("finalizes plan_artifact_v1 by rendering and persisting a hub-derived artifact before done", async () => {
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
+    const created = await createTask(CEO_AGENT, {
+      title: "Plan artifact finalize",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+        repoScope: {
+          targetRepo,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const done = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "agent-authored prose should not win",
+      contractResult: {
+        contractId: "plan_artifact_v1",
+        output: {
+          scope: "Implement finalize slice for plan artifact tasks.",
+          steps: [
+            "Validate structured output.",
+            "Render the artifact from structured fields.",
+            "Persist artifact and task state before done.",
+          ],
+          risks: ["Database/file persistence is not cross-resource atomic."],
+          verification: [
+            "Run targeted task finalize tests.",
+            "Confirm the artifact path stays inside repo scope.",
+          ],
+        },
+      },
+      resultMeta: {
+        completion: {
+          classifierState: "terminal_valid",
+          finalDisposition: "native_valid",
+        },
+        source: "agent-supplied-meta",
+      },
+    });
+
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.data.status).toBe("done");
+    expect(done.data.result).toContain("# Plan Artifact");
+    expect(done.data.result).toContain("## Scope");
+    expect(done.data.result).toContain("Implement finalize slice for plan artifact tasks.");
+    expect(done.data.result).not.toContain("agent-authored prose should not win");
+    expect(done.data.resultMeta).toMatchObject({
+      source: "agent-supplied-meta",
+      artifactPath: join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"),
+    });
+
+    const artifactPath = done.data.resultMeta?.artifactPath;
+    expect(typeof artifactPath).toBe("string");
+    expect(readFileSync(String(artifactPath), "utf-8")).toBe(done.data.result);
+
+    const fetched = await getTask(REGULAR_AGENT, created.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.contractResult).toEqual(done.data.contractResult);
+    expect(fetched.data.result).toBe(done.data.result);
+  });
+
+  it("rejects done for plan_artifact_v1 when contractResult is missing and keeps the task non-terminal", async () => {
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
+    const created = await createTask(CEO_AGENT, {
+      title: "Plan artifact missing contract result",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+        repoScope: {
+          targetRepo,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "should not reach generic done path",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/requires contractResult/i);
+
+    const fetched = await getTask(REGULAR_AGENT, created.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.status).toBe("in_progress");
+    expect(fetched.data.result).toBeNull();
+    expect(fetched.data.contractResult).toBeNull();
+    expect(fetched.data.resultMeta).toBeNull();
+  });
+
+  it("rejects done for plan_artifact_v1 when contractResult.contractId does not match and keeps the task non-terminal", async () => {
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
+    const created = await createTask(CEO_AGENT, {
+      title: "Plan artifact contract id mismatch",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+        repoScope: {
+          targetRepo,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      contractResult: {
+        contractId: "codebase_review_task",
+        output: {
+          scope: "Wrong contract id",
+          steps: ["Should not finalize."],
+          risks: [],
+          verification: ["Reject finalize contract mismatch."],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/contractResult\.contractId must match requested contractId/i);
+
+    const fetched = await getTask(REGULAR_AGENT, created.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.status).toBe("in_progress");
+    expect(fetched.data.result).toBeNull();
+    expect(fetched.data.contractResult).toBeNull();
+    expect(fetched.data.resultMeta).toBeNull();
+    expect(existsSync(join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"))).toBe(false);
+  });
+
+  it("keeps the task non-done when the hub-derived artifact path escapes repo scope", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Plan artifact repo escape",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+        repoScope: {
+          targetRepo: mkdtempSync(join(tmpdir(), "archon-plan-artifact-")),
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const resolveSpy = vi.spyOn(taskFinalize.taskFinalizeOps, "resolveArtifactPath").mockImplementation(() => {
+      throw new Error("Derived artifact path escapes repo scope: /tmp/escape.md");
+    });
+    try {
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId: "plan_artifact_v1",
+          output: {
+            scope: "Escape repo scope",
+            steps: ["Derive plan path."],
+            risks: [],
+            verification: ["Reject outside-repo paths."],
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/escapes repo scope/i);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.resultMeta).toBeNull();
+    } finally {
+      resolveSpy.mockRestore();
+    }
+  });
+
+  it("keeps the task non-done when artifact persistence fails", async () => {
+    const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-"));
+    const created = await createTask(CEO_AGENT, {
+      title: "Plan artifact write failure",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+        repoScope: {
+          targetRepo,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const persistSpy = vi.spyOn(taskFinalize, "persistArtifact").mockRejectedValue(new Error("disk full"));
+    try {
+      const result = await updateTask(REGULAR_AGENT, created.data.id, {
+        status: "done",
+        contractResult: {
+          contractId: "plan_artifact_v1",
+          output: {
+            scope: "Write failure path",
+            steps: ["Render artifact."],
+            risks: [],
+            verification: ["Simulate persistence failure."],
+          },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.code).toBe("SERVER");
+      expect(result.error).toMatch(/failed to persist finalized artifact: disk full/i);
+
+      const fetched = await getTask(REGULAR_AGENT, created.data.id);
+      expect(fetched.ok).toBe(true);
+      if (!fetched.ok) return;
+      expect(fetched.data.status).toBe("in_progress");
+      expect(fetched.data.result).toBeNull();
+      expect(fetched.data.resultMeta).toBeNull();
+      expect(existsSync(join(targetRepo, "artifacts", "tasks", created.data.id, "plan.md"))).toBe(false);
+    } finally {
+      persistSpy.mockRestore();
     }
   });
 });
