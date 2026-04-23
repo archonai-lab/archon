@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/connection.js";
 import { tasks, agents } from "../db/schema.js";
 import { hasPermission } from "../hub/permissions.js";
@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { validateCompiledOutput } from "../contracts/compiler.js";
 import { loadContracts } from "../contracts/loader.js";
 import type { ValidationIssue } from "../contracts/types.js";
+import * as taskFinalize from "./task-finalize.js";
 import type {
   TaskAttempt,
   TaskCompletionContract,
@@ -109,7 +110,6 @@ function formatValidationIssues(issues: ValidationIssue[]): string {
 function validateTaskContractResult(task: Task, opts: UpdateTaskOpts): TaskErr | null {
   const requestedContractId = task.completionContract?.contractId?.trim();
   if (!requestedContractId || opts.status !== "done") return null;
-
   if (!opts.contractResult) {
     return clientErr(`Task result failed output contract "${requestedContractId}": completion contract requires contractResult`);
   }
@@ -137,6 +137,85 @@ function validateTaskContractResult(task: Task, opts: UpdateTaskOpts): TaskErr |
   }
 
   return null;
+}
+
+function getFinalizeRepoRoot(task: Task): string | null {
+  return task.repoScope?.targetRepo?.trim() || null;
+}
+
+async function finalizeTaskUpdate(
+  requesterId: string,
+  task: Task,
+  opts: UpdateTaskOpts,
+): Promise<TaskResult<Task> | null> {
+  const requestedContractId = task.completionContract?.contractId?.trim();
+  const handler = requestedContractId ? taskFinalize.getFinalizeHandler(requestedContractId) : null;
+  if (opts.status !== "done" || !handler || !opts.contractResult) {
+    return null;
+  }
+
+  const repoRoot = getFinalizeRepoRoot(task);
+  if (handler.requiresRepoScope && !repoRoot) {
+    return clientErr("Task finalize requires repoScope.targetRepo");
+  }
+
+  let finalized: taskFinalize.TaskFinalizeResult;
+  try {
+    finalized = handler.finalize({
+      taskId: task.id,
+      repoRoot,
+      contractResult: opts.contractResult,
+      resultMeta: opts.resultMeta,
+    });
+  } catch (error) {
+    return clientErr(error instanceof Error ? error.message : String(error));
+  }
+
+  let createdArtifacts: string[];
+  try {
+    createdArtifacts = await taskFinalize.persistArtifacts(repoRoot ?? "", finalized.artifacts);
+  } catch (error) {
+    return serverErr(`Failed to persist finalized artifact: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const now = new Date();
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(tasks)
+        .set({
+          status: "done",
+          contractResult: opts.contractResult,
+          resultMeta: finalized.resultMeta,
+          result: finalized.result,
+          version: task.version + 1,
+          changedBy: requesterId,
+          updatedAt: now,
+        })
+        .where(eq(tasks.id, task.id));
+    });
+  } catch (error) {
+    await Promise.all(createdArtifacts.map((artifactPath) =>
+      taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
+        logger.warn(
+          {
+            taskId: task.id,
+            cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          },
+          "Failed to clean up finalized artifact after database error",
+        );
+      })
+    ));
+    return serverErr(`Failed to persist finalized task result: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const updated = await db.query.tasks.findFirst({ where: eq(tasks.id, task.id) });
+  if (!updated) {
+    return serverErr("Failed to retrieve finalized task");
+  }
+
+  logger.info({ taskId: task.id, requesterId }, "Task finalized");
+  return { ok: true, data: toTaskView(updated) };
 }
 
 // --- Auth helpers ---
@@ -311,6 +390,11 @@ export async function updateTask(
       return clientErr(`Invalid task result metadata: ${parsedResultMeta.error.issues[0]?.message ?? "unknown error"}`);
     }
     opts = { ...opts, resultMeta: parsedResultMeta.data };
+  }
+
+  const finalizeResult = await finalizeTaskUpdate(requesterId, toTaskView(task), opts);
+  if (finalizeResult) {
+    return finalizeResult;
   }
 
   const now = new Date();
