@@ -1,0 +1,54 @@
+[info]
+id = "plan_artifact_v1"
+version = "1.0"
+contract_type = "task"
+
+[output]
+type = "object"
+required = true
+normative = true
+
+[output.fields.scope]
+type = "string"
+required = true
+normative = true
+description = "Short statement of the task scope covered by the plan artifact."
+
+[output.fields.steps]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Ordered implementation steps required to complete the plan."
+
+[output.fields.steps.items]
+type = "string"
+required = true
+normative = true
+description = "One concrete implementation step in the plan."
+
+[output.fields.risks]
+type = "array"
+required = true
+normative = true
+allow_empty = true
+description = "Known risks, tradeoffs, or uncertainties that remain after planning."
+
+[output.fields.risks.items]
+type = "string"
+required = true
+normative = true
+description = "One specific risk, tradeoff, or uncertainty."
+
+[output.fields.verification]
+type = "array"
+required = true
+normative = true
+allow_empty = false
+description = "Checks that will confirm the planned work is complete or correct."
+
+[output.fields.verification.items]
+type = "string"
+required = true
+normative = true
+description = "One concrete verification step for the planned work."
