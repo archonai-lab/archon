@@ -172,6 +172,35 @@ describe("createTask", () => {
     expect(fetched.data.completionContract?.contractId).toBe("codebase_review_task");
   });
 
+  it("returns projected completionSurface through task CRUD read paths", async () => {
+    const result = await createTask(CEO_AGENT, {
+      title: "Plan artifact with projected surface",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "plan",
+        completionContract: {
+          contractId: "plan_artifact_v1",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.completionSurface?.contractId).toBe("plan_artifact_v1");
+    expect(Object.keys(result.data.completionSurface?.fields ?? {}).length).toBeGreaterThan(0);
+
+    const fetched = await getTask(REGULAR_AGENT, result.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.completionSurface?.contractId).toBe("plan_artifact_v1");
+
+    const listed = await listTasks(CEO_AGENT);
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const listedTask = listed.data.tasks.find((task) => task.id === result.data.id);
+    expect(listedTask?.completionSurface?.contractId).toBe("plan_artifact_v1");
+  });
+
   it("rejects invalid task metadata", async () => {
     const result = await createTask(CEO_AGENT, {
       title: "Bad metadata task",

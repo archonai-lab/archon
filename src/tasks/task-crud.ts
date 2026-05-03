@@ -9,29 +9,18 @@ import { loadContracts } from "../contracts/loader.js";
 import type { ValidationIssue } from "../contracts/types.js";
 import * as taskFinalize from "./task-finalize.js";
 import type {
-  TaskAttempt,
-  TaskCompletionContract,
   TaskContractResult,
   TaskMetadata,
   TaskResultMeta,
-  TaskRepoScope,
 } from "./task-metadata.js";
 import { normalizeTaskMetadata, taskMetadataSchema, taskResultMetaSchema } from "./task-metadata.js";
+import { toTaskView, type Task } from "./task-view.js";
 
 // --- Types ---
 
 export type TaskStatus = "pending" | "in_progress" | "done" | "failed";
 type TaskRecord = typeof tasks.$inferSelect;
 export type TaskErrorCode = "CLIENT" | "SERVER";
-
-export interface Task extends Omit<TaskRecord, "taskMetadata"> {
-  taskType?: string | null;
-  completionContract?: TaskCompletionContract | null;
-  attempt?: TaskAttempt | null;
-  repoScope?: TaskRepoScope | null;
-  contractResult: TaskContractResult | null;
-  resultMeta: TaskResultMeta | null;
-}
 
 export interface TaskOk<T> {
   ok: true;
@@ -76,31 +65,6 @@ function clientErr(error: string): TaskErr {
 
 function serverErr(error: string): TaskErr {
   return { ok: false, code: "SERVER", error };
-}
-
-function toTaskView(task: TaskRecord): Task {
-  const metadata = normalizeTaskMetadata(task.taskMetadata);
-  const parsedResultMeta = taskResultMetaSchema.safeParse(task.resultMeta);
-  return {
-    id: task.id,
-    title: task.title,
-    description: task.description,
-    status: task.status,
-    assignedTo: task.assignedTo,
-    assignedBy: task.assignedBy,
-    meetingId: task.meetingId,
-    result: task.result,
-    version: task.version,
-    changedBy: task.changedBy,
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-    contractResult: task.contractResult ?? null,
-    resultMeta: parsedResultMeta.success ? parsedResultMeta.data : null,
-    taskType: metadata?.taskType ?? null,
-    completionContract: metadata?.completionContract ?? null,
-    attempt: metadata?.attempt ?? null,
-    repoScope: metadata?.repoScope ?? null,
-  };
 }
 
 function formatValidationIssues(issues: ValidationIssue[]): string {
