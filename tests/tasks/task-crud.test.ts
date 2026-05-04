@@ -153,6 +153,20 @@ describe("createTask", () => {
         taskType: "review",
         completionContract: {
           contractId: "codebase_review_task",
+          input: {
+            target_repo: "/tmp/archon-output-contract-main",
+          },
+          output: {
+            description: "Structured evidence the reviewer must acknowledge before closing the task.",
+            requiredFields: ["verdict"],
+            fields: {
+              verdict: {
+                description: "Final review verdict for the human task board.",
+                type: "string",
+                nonEmpty: true,
+              },
+            },
+          },
         },
         repoScope: {
           targetRepo: "/tmp/archon-output-contract-main",
@@ -164,12 +178,41 @@ describe("createTask", () => {
     if (!result.ok) return;
     expect(result.data.taskType).toBe("review");
     expect(result.data.completionContract?.contractId).toBe("codebase_review_task");
+    expect(result.data.completionContract?.input).toEqual({
+      target_repo: "/tmp/archon-output-contract-main",
+    });
+    expect(result.data.completionContract?.output?.description).toBe(
+      "Structured evidence the reviewer must acknowledge before closing the task.",
+    );
+    expect(result.data.completionContract?.output?.requiredFields).toEqual(["verdict"]);
     expect(result.data.repoScope?.targetRepo).toBe("/tmp/archon-output-contract-main");
 
     const fetched = await getTask(REGULAR_AGENT, result.data.id);
     expect(fetched.ok).toBe(true);
     if (!fetched.ok) return;
     expect(fetched.data.completionContract?.contractId).toBe("codebase_review_task");
+    expect(fetched.data.completionContract?.output?.fields?.verdict).toEqual({
+      description: "Final review verdict for the human task board.",
+      type: "string",
+      nonEmpty: true,
+    });
+  });
+
+  it("rejects removed completion contract fields", async () => {
+    const removedField = ["required", "Sections"].join("");
+    const result = await createTask(CEO_AGENT, {
+      title: "Removed metadata task",
+      taskMetadata: {
+        completionContract: {
+          contractId: "legacy_contract",
+          [removedField]: ["verdict"],
+        },
+      } as unknown as Parameters<typeof createTask>[1]["taskMetadata"],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/Invalid task metadata/i);
   });
 
   it("rejects invalid task metadata", async () => {
@@ -534,6 +577,232 @@ describe("updateTask", () => {
     } finally {
       restoreHome();
     }
+  });
+
+  it("accepts a valid contractResult against inline generic output rules", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "archon-inline-contract-"));
+    mkdirSync(join(repoRoot, "mockups"), { recursive: true });
+    writeFileSync(join(repoRoot, "mockups", "task.html"), "<main>done</main>\n");
+
+    const created = await createTask(CEO_AGENT, {
+      title: "Inline output contract task",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "ui_mockup_static_prototype",
+        completionContract: {
+          contractId: "artifact_file_v1",
+          input: {
+            artifact_path: "mockups/task.html",
+          },
+          output: {
+            description: "Artifact completion evidence for the assigned prototype task.",
+            requiredFields: ["artifact_path", "changed_files", "verification"],
+            fields: {
+              artifact_path: {
+                description: "Repo-local artifact path the agent created.",
+                type: "string",
+                equalsInput: "artifact_path",
+                pathExists: true,
+                minBytes: 12,
+                fileIncludes: ["<main>"],
+              },
+              changed_files: {
+                description: "Files changed to satisfy this task.",
+                type: "string_array",
+                nonEmpty: true,
+                includesInput: "artifact_path",
+              },
+              verification: {
+                description: "Commands or checks that prove the artifact works.",
+                type: "string_array",
+                nonEmpty: true,
+                rejectNegative: true,
+              },
+            },
+          },
+        },
+        repoScope: {
+          targetRepo: repoRoot,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const done = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "Created the inline contract artifact.",
+      contractResult: {
+        contractId: "artifact_file_v1",
+        output: {
+          artifact_path: "mockups/task.html",
+          changed_files: ["mockups/task.html"],
+          verification: ["test -f mockups/task.html"],
+        },
+      },
+    });
+
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.data.status).toBe("done");
+    expect(done.data.contractResult?.contractId).toBe("artifact_file_v1");
+  });
+
+  it("rejects empty artifact files against inline generic output rules", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "archon-inline-contract-empty-"));
+    mkdirSync(join(repoRoot, "mockups"), { recursive: true });
+    writeFileSync(join(repoRoot, "mockups", "task.html"), "");
+
+    const created = await createTask(CEO_AGENT, {
+      title: "Inline empty artifact contract task",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "ui_mockup_static_prototype",
+        completionContract: {
+          contractId: "artifact_file_v1",
+          input: {
+            artifact_path: "mockups/task.html",
+          },
+          output: {
+            requiredFields: ["artifact_path"],
+            fields: {
+              artifact_path: {
+                type: "string",
+                equalsInput: "artifact_path",
+                pathExists: true,
+                minBytes: 12,
+                fileIncludes: ["<main>"],
+              },
+            },
+          },
+        },
+        repoScope: {
+          targetRepo: repoRoot,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "Created the inline contract artifact.",
+      contractResult: {
+        contractId: "artifact_file_v1",
+        output: {
+          artifact_path: "mockups/task.html",
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("output.artifact_path: file must be at least 12 bytes");
+    expect(result.error).toContain("output.artifact_path: file must include \"<main>\"");
+  });
+
+  it("rejects inline output paths that escape repo scope", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "archon-inline-contract-scope-"));
+    const outsidePath = join(tmpdir(), `archon-inline-outside-${Date.now()}.html`);
+    writeFileSync(outsidePath, "<main>outside</main>\n");
+
+    const created = await createTask(CEO_AGENT, {
+      title: "Inline path scope contract task",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "ui_mockup_static_prototype",
+        completionContract: {
+          contractId: "artifact_file_v1",
+          output: {
+            requiredFields: ["artifact_path"],
+            fields: {
+              artifact_path: {
+                type: "string",
+                pathExists: true,
+                minBytes: 12,
+                fileIncludes: ["<main>"],
+              },
+            },
+          },
+        },
+        repoScope: {
+          targetRepo: repoRoot,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "Claimed an artifact outside repo scope.",
+      contractResult: {
+        contractId: "artifact_file_v1",
+        output: {
+          artifact_path: outsidePath,
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("output.artifact_path: path escapes repo scope");
+  });
+
+  it("rejects invalid inline generic output contract results", async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "archon-inline-contract-bad-"));
+    const created = await createTask(CEO_AGENT, {
+      title: "Bad inline output contract task",
+      assignedTo: REGULAR_AGENT,
+      taskMetadata: {
+        taskType: "implementation",
+        completionContract: {
+          contractId: "file_change_v1",
+          input: {
+            changed_file: "src/runner.ts",
+          },
+          output: {
+            requiredFields: ["changed_files", "verification"],
+            fields: {
+              changed_files: { type: "string_array", nonEmpty: true, includesInput: "changed_file" },
+              verification: { type: "string_array", nonEmpty: true, rejectNegative: true },
+            },
+          },
+        },
+        repoScope: {
+          targetRepo: repoRoot,
+        },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+    const result = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "Claimed completion without contract evidence.",
+      contractResult: {
+        contractId: "file_change_v1",
+        output: {
+          changed_files: ["src/other.ts"],
+          verification: ["not run"],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("output.changed_files: must include input.changed_file");
+    expect(result.error).toContain("output.verification: must contain completed evidence");
+
+    const fetched = await getTask(REGULAR_AGENT, created.data.id);
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok) return;
+    expect(fetched.data.status).toBe("in_progress");
+    expect(fetched.data.contractResult).toBeNull();
   });
 
   it("persists resultMeta alongside contractResult and returns it from get/list", async () => {

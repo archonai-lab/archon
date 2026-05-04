@@ -566,6 +566,7 @@ describe("HubServer", () => {
         },
       }) as { type: string; task: { id: string } };
 
+      await waitForMessageType(assignee, "task.created");
       await sendAndReceive(assignee, {
         type: "task.update",
         taskId: created.task.id,
@@ -661,7 +662,7 @@ describe("HubServer", () => {
         tasks: expect.arrayContaining([
           expect.objectContaining({
             id: created.task.id,
-            resultMeta: {
+            resultMeta: expect.objectContaining({
               completion: {
                 classifierState: "terminal_valid",
                 salvageCount: 0,
@@ -669,12 +670,12 @@ describe("HubServer", () => {
                 finalDisposition: "native_valid",
               },
               source: "issue34-smoke-ae52f195",
-            },
-            contractResult: {
-              output: {
+            }),
+            contractResult: expect.objectContaining({
+              output: expect.objectContaining({
                 verdict: "pass_with_notes",
-              },
-            },
+              }),
+            }),
           }),
         ]),
       });

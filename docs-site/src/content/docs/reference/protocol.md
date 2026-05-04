@@ -176,6 +176,109 @@ Acknowledge a task assigned to you.
 { "type": "meeting.acknowledge", "meetingId": "abc123", "taskIndex": 0 }
 ```
 
+### Task Operations
+
+#### `task.create`
+Create a task. Requires task management permission.
+
+```json
+{
+  "type": "task.create",
+  "title": "Build static prototype",
+  "description": "Create the requested mockup file",
+  "assignedTo": "rune",
+  "taskMetadata": {
+    "taskType": "ui_mockup_static_prototype",
+    "completionContract": {
+      "contractId": "artifact_file_v1",
+      "input": {
+        "artifact_path": "mockups/task.html"
+      },
+      "output": {
+        "description": "Artifact completion evidence the assignee must acknowledge before closing the task.",
+        "requiredFields": ["artifact_path", "changed_files", "verification"],
+        "fields": {
+          "artifact_path": {
+            "description": "Repo-local artifact path the agent created.",
+            "type": "string",
+            "equalsInput": "artifact_path",
+            "pathExists": true,
+            "minBytes": 12,
+            "fileIncludes": ["<main>"]
+          },
+          "changed_files": {
+            "description": "Files changed to satisfy this task.",
+            "type": "string_array",
+            "nonEmpty": true,
+            "includesInput": "artifact_path"
+          },
+          "verification": {
+            "description": "Commands or checks that prove the artifact works.",
+            "type": "string_array",
+            "nonEmpty": true,
+            "rejectNegative": true
+          }
+        }
+      }
+    },
+    "repoScope": {
+      "targetRepo": "/home/leviathanst/example"
+    }
+  }
+}
+```
+
+`completionContract.input` carries task-specific parameters. `completionContract.output` defines the only inline checker rules for completing that task. `description` fields explain what the assignee is acknowledging and make the task readable for humans, but they do not change validation. Legacy checklist fields such as `requiredSections` are not part of the protocol; use an explicit contract or inline output fields instead.
+
+Supported inline output field checks:
+
+| Field | Meaning |
+|-------|---------|
+| `description` | Human-readable meaning for the output contract or field |
+| `type` | Expected value type: `string`, `string_array`, `array`, `object`, `boolean`, or `number` |
+| `required` | Field must be present |
+| `nonEmpty` | String, array, or object must contain content |
+| `equalsInput` | Output string must equal the named input string |
+| `includesInput` | Output string array must include the named input string |
+| `pathExists` | Output string path must exist under `repoScope.targetRepo` |
+| `minBytes` | Output string path must point to a file at least this many bytes |
+| `fileIncludes` | Output string path must point to a file containing each required text |
+| `rejectNegative` | Output string array must not contain missing-evidence phrases such as `not run` |
+
+#### `task.list`
+List visible tasks.
+
+```json
+{ "type": "task.list" }
+```
+
+#### `task.get`
+Fetch one task by ID.
+
+```json
+{ "type": "task.get", "taskId": "task-123" }
+```
+
+#### `task.update`
+Update an assigned task. A task with a completion contract must provide a matching `contractResult` when moving to `done`.
+
+```json
+{
+  "type": "task.update",
+  "taskId": "task-123",
+  "status": "done",
+  "result": "Created the prototype.",
+  "contractResult": {
+    "contractId": "artifact_file_v1",
+    "output": {
+      "artifact_path": "mockups/task.html",
+      "changed_files": ["mockups/task.html"],
+      "verification": ["npm run build passed"]
+    }
+  }
+}
+```
+
 #### `meeting.approve`
 Approve phase advancement (when `approvalRequired` is set).
 
