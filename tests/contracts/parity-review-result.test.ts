@@ -3,7 +3,6 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import {
   compileContractToml,
-  evaluateLegacyReviewResult,
   validateCompiledOutput,
 } from "../../src/contracts/compiler.js";
 
@@ -14,15 +13,6 @@ const fixturePath = resolve(
 
 describe("review parity scaffold", () => {
   const compiled = compileContractToml(readFileSync(fixturePath, "utf-8"));
-
-  it("shows the false-green heading-only case passes the legacy checker", () => {
-    const legacy = evaluateLegacyReviewResult([
-      "No findings: no merge blockers found.",
-      "Verdict: safe to merge with normal caution.",
-      "Verification: reviewed the branch diff and targeted tests.",
-    ].join("\n"));
-    expect(legacy.ok).toBe(true);
-  });
 
   it("fails the heading-only case under the compiled checker", () => {
     const compiledResult = validateCompiledOutput(compiled, {

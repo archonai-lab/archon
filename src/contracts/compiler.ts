@@ -235,20 +235,3 @@ export function validateCompiledOutput(
     issues,
   };
 }
-
-export function evaluateLegacyReviewResult(report: string): ValidationResult {
-  const issues: ValidationIssue[] = [];
-  if (!/(^|\n)\s*(?:#+\s*)?verdict\s*[:\-]/i.test(report)) {
-    issues.push({ path: "report.verdict", message: "missing verdict heading" });
-  }
-  if (!/(^|\n)\s*(?:#+\s*)?(findings|no findings)\s*[:\-]/i.test(report)) {
-    issues.push({ path: "report.findings", message: "missing findings/no findings heading" });
-  }
-  if (!/(^|\n)\s*(?:#+\s*)?verification\s*[:\-]/i.test(report)) {
-    issues.push({ path: "report.verification", message: "missing verification heading" });
-  }
-  return {
-    ok: issues.length === 0,
-    issues,
-  };
-}

@@ -4,15 +4,29 @@ export interface TaskCompletionContract {
   taskType?: string | null;
   deliverableKind?: string | null;
   contractId?: string | null;
-  artifactRequired?: boolean;
-  requiredArtifacts?: string[];
-  changedFilesRequired?: boolean;
-  verificationRequired?: boolean;
-  requiredVerification?: string[];
-  requiredSections?: string[];
-  findingsOrNoFindingsRequired?: boolean;
+  input?: Record<string, unknown> | null;
+  output?: TaskOutputContract | null;
   semanticGateRequired?: boolean;
   humanAcceptanceRequired?: boolean;
+}
+
+export interface TaskOutputContract {
+  description?: string | null;
+  requiredFields?: string[];
+  fields?: Record<string, TaskOutputFieldContract>;
+}
+
+export interface TaskOutputFieldContract {
+  description?: string | null;
+  type?: "string" | "string_array" | "array" | "object" | "boolean" | "number";
+  required?: boolean;
+  nonEmpty?: boolean;
+  equalsInput?: string;
+  includesInput?: string;
+  pathExists?: boolean;
+  minBytes?: number;
+  fileIncludes?: string[];
+  rejectNegative?: boolean;
 }
 
 export interface TaskAttempt {
@@ -54,13 +68,23 @@ export const taskCompletionContractSchema = z.object({
   taskType: z.string().min(1).optional(),
   deliverableKind: z.string().min(1).optional(),
   contractId: z.string().min(1).optional(),
-  artifactRequired: z.boolean().optional(),
-  requiredArtifacts: z.array(z.string().min(1)).optional(),
-  changedFilesRequired: z.boolean().optional(),
-  verificationRequired: z.boolean().optional(),
-  requiredVerification: z.array(z.string().min(1)).optional(),
-  requiredSections: z.array(z.string().min(1)).optional(),
-  findingsOrNoFindingsRequired: z.boolean().optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  output: z.object({
+    description: z.string().min(1).optional(),
+    requiredFields: z.array(z.string().min(1)).optional(),
+    fields: z.record(z.string(), z.object({
+      description: z.string().min(1).optional(),
+      type: z.enum(["string", "string_array", "array", "object", "boolean", "number"]).optional(),
+      required: z.boolean().optional(),
+      nonEmpty: z.boolean().optional(),
+      equalsInput: z.string().min(1).optional(),
+      includesInput: z.string().min(1).optional(),
+      pathExists: z.boolean().optional(),
+      minBytes: z.number().int().min(0).optional(),
+      fileIncludes: z.array(z.string().min(1)).optional(),
+      rejectNegative: z.boolean().optional(),
+    }).strict()).optional(),
+  }).strict().optional(),
   semanticGateRequired: z.boolean().optional(),
   humanAcceptanceRequired: z.boolean().optional(),
 }).strict();
