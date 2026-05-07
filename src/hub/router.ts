@@ -1207,6 +1207,8 @@ export class Router {
     agentId: string,
     msg: {
       taskId: string;
+      attemptId?: string;
+      expectedTaskVersion?: number;
       status?: 'pending' | 'in_progress' | 'done' | 'failed';
       result?: string;
       contractResult?: { contractId: string; output: Record<string, unknown> };
@@ -1215,6 +1217,8 @@ export class Router {
     }
   ): Promise<void> {
     const updateResult = await updateTask(agentId, msg.taskId, {
+      attemptId: msg.attemptId,
+      expectedTaskVersion: msg.expectedTaskVersion,
       status: msg.status,
       result: msg.result,
       contractResult: msg.contractResult,
@@ -1222,6 +1226,21 @@ export class Router {
     });
 
     if (!updateResult.ok) {
+      if (updateResult.code === "STALE_ATTEMPT") {
+        const rejection = {
+          type: "task.update.rejected",
+          accepted: false,
+          code: updateResult.code,
+          taskId: updateResult.taskId,
+          currentStatus: updateResult.currentStatus,
+          currentVersion: updateResult.currentVersion,
+          attemptClosed: updateResult.attemptClosed,
+          ...(updateResult.attemptId ? { attemptId: updateResult.attemptId } : {}),
+        };
+        this.sessions.send(agentId, rejection);
+        return;
+      }
+
       const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(updateResult.error);
       this.sessions.send(agentId, createError(code, updateResult.error));
       return;

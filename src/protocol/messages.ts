@@ -217,6 +217,8 @@ const taskContractResultSchema = z.object({
 export const TaskUpdateMessage = z.object({
   type: z.literal('task.update'),
   taskId: z.string().min(1),
+  attemptId: z.string().min(1).optional(),
+  expectedTaskVersion: z.number().int().positive().optional(),
   status: z.enum(['pending', 'in_progress', 'done', 'failed']).optional(),
   result: z.string().optional(),
   contractResult: taskContractResultSchema.optional(),
