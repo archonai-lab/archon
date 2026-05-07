@@ -367,52 +367,59 @@ async function finalizeTaskUpdate(
     return clientErr(error instanceof Error ? error.message : String(error));
   }
 
-  let createdArtifacts: string[];
+  let createdArtifacts: string[] = [];
+  const persistenceState: { step: "artifact" | "task" } = { step: "task" };
   try {
-    createdArtifacts = await taskFinalize.persistArtifacts(repoRoot ?? "", finalized.artifacts);
-  } catch (error) {
-    return serverErr(`Failed to persist finalized artifact: ${error instanceof Error ? error.message : String(error)}`);
-  }
+    const result = await db.transaction(async (tx): Promise<TaskUpdateResult> => {
+      const [current] = await tx
+        .select()
+        .from(tasks)
+        .where(eq(tasks.id, task.id))
+        .for("update");
 
-  const now = new Date();
-  try {
-    const updated = await db.transaction(async (tx) => {
-      const whereClause = opts.expectedTaskVersion !== undefined
-        ? and(eq(tasks.id, task.id), eq(tasks.version, opts.expectedTaskVersion))
-        : eq(tasks.id, task.id);
+      if (!current) {
+        return serverErr("Failed to retrieve task for finalization");
+      }
 
-      return tx
+      const currentStatus = current.status as TaskStatus;
+      if (opts.expectedTaskVersion !== undefined) {
+        if (opts.expectedTaskVersion !== current.version || currentStatus === "done" || currentStatus === "failed") {
+          return staleAttempt(current, opts.attemptId);
+        }
+      } else if (currentStatus === "done" || currentStatus === "failed") {
+        return clientErr(`Task is in terminal state "${currentStatus}" and cannot be modified`);
+      }
+
+      persistenceState.step = "artifact";
+      createdArtifacts = await taskFinalize.persistArtifacts(repoRoot ?? "", finalized.artifacts);
+
+      persistenceState.step = "task";
+      const now = new Date();
+      const [updated] = await tx
         .update(tasks)
         .set({
           status: "done",
           contractResult: opts.contractResult,
           resultMeta: finalized.resultMeta,
           result: finalized.result,
-          version: task.version + 1,
+          version: current.version + 1,
           changedBy: requesterId,
           updatedAt: now,
         })
-        .where(whereClause)
+        .where(eq(tasks.id, task.id))
         .returning();
+
+      if (!updated) {
+        return serverErr("Failed to update finalized task");
+      }
+
+      return { ok: true, data: toTaskView(updated) };
     });
 
-    if (updated.length === 0) {
-      await Promise.all(createdArtifacts.map((artifactPath) =>
-        taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
-          logger.warn(
-            {
-              taskId: task.id,
-              cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-            },
-            "Failed to clean up finalized artifact after stale update rejection",
-          );
-        })
-      ));
-      const current = await db.query.tasks.findFirst({ where: eq(tasks.id, task.id) });
-      return current
-        ? staleAttempt(current, opts.attemptId)
-        : serverErr("Failed to retrieve current task after stale finalize rejection");
-    }
+    if (!result.ok) return result;
+
+    logger.info({ taskId: task.id, requesterId }, "Task finalized");
+    return result;
   } catch (error) {
     await Promise.all(createdArtifacts.map((artifactPath) =>
       taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
@@ -425,16 +432,11 @@ async function finalizeTaskUpdate(
         );
       })
     ));
-    return serverErr(`Failed to persist finalized task result: ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    return persistenceState.step === "artifact"
+      ? serverErr(`Failed to persist finalized artifact: ${message}`)
+      : serverErr(`Failed to persist finalized task result: ${message}`);
   }
-
-  const updated = await db.query.tasks.findFirst({ where: eq(tasks.id, task.id) });
-  if (!updated) {
-    return serverErr("Failed to retrieve finalized task");
-  }
-
-  logger.info({ taskId: task.id, requesterId }, "Task finalized");
-  return { ok: true, data: toTaskView(updated) };
 }
 
 // --- Auth helpers ---

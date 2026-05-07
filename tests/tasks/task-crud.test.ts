@@ -1943,6 +1943,86 @@ describe("terminal-state immutability", () => {
     expect(fetched.data.version).toBe(winner.data.version);
   });
 
+  it("allows only one concurrent conditional finalized update for the same version", async () => {
+    const restoreHome = withSeededArchonHome();
+    try {
+      const targetRepo = mkdtempSync(join(tmpdir(), "archon-plan-artifact-race-"));
+      const created = await createTask(CEO_AGENT, {
+        title: "Concurrent conditional plan finalization task",
+        assignedTo: REGULAR_AGENT,
+        taskMetadata: {
+          taskType: "implementation",
+          completionContract: {
+            contractId: "plan_artifact_v1",
+          },
+          repoScope: {
+            targetRepo,
+          },
+        },
+      });
+      expect(created.ok).toBe(true);
+      if (!created.ok) return;
+
+      const inProgress = await updateTask(REGULAR_AGENT, created.data.id, { status: "in_progress" });
+      expect(inProgress.ok).toBe(true);
+      if (!inProgress.ok) return;
+
+      const makeContractResult = (scope: string) => ({
+        contractId: "plan_artifact_v1",
+        output: {
+          scope,
+          steps: ["Render a plan artifact."],
+          risks: [],
+          verification: ["Confirm stale finalizers do not write artifacts."],
+        },
+      });
+
+      const [firstAttempt, secondAttempt] = await Promise.all([
+        updateTask(REGULAR_AGENT, created.data.id, {
+          attemptId: "finalize-race-a",
+          expectedTaskVersion: inProgress.data.version,
+          status: "done",
+          contractResult: makeContractResult("First finalizer"),
+        }),
+        updateTask(REGULAR_AGENT, created.data.id, {
+          attemptId: "finalize-race-b",
+          expectedTaskVersion: inProgress.data.version,
+          status: "done",
+          contractResult: makeContractResult("Second finalizer"),
+        }),
+      ]);
+
+      const results = [firstAttempt, secondAttempt];
+      const successful = results.filter((result) => result.ok);
+      const rejected = results.filter((result) => !result.ok && result.code === "STALE_ATTEMPT");
+
+      expect(successful).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const winner = successful[0];
+      const stale = rejected[0];
+      if (!winner || !stale || !winner.ok || stale.ok) return;
+
+      expect(winner.data.status).toBe("done");
+      expect(winner.data.version).toBe(inProgress.data.version + 1);
+      expect(stale).toMatchObject({
+        code: "STALE_ATTEMPT",
+        taskId: created.data.id,
+        currentStatus: "done",
+        currentVersion: winner.data.version,
+        attemptClosed: true,
+      });
+      expect(["finalize-race-a", "finalize-race-b"]).toContain(stale.attemptId);
+
+      const artifactPath = winner.data.resultMeta?.artifactPath;
+      expect(typeof artifactPath).toBe("string");
+      expect(existsSync(String(artifactPath))).toBe(true);
+      expect(readFileSync(String(artifactPath), "utf-8")).toBe(winner.data.result);
+    } finally {
+      restoreHome();
+    }
+  });
+
   it("rejects a conditional write against an already terminal task as STALE_ATTEMPT", async () => {
     const created = await createTask(CEO_AGENT, {
       title: "Conditional terminal stale task",
