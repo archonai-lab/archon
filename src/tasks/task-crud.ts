@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db/connection.js";
 import { tasks, agents } from "../db/schema.js";
 import { hasPermission } from "../hub/permissions.js";
@@ -11,6 +11,7 @@ import { loadContracts } from "../contracts/loader.js";
 import type { ValidationIssue } from "../contracts/types.js";
 import * as taskFinalize from "./task-finalize.js";
 import type {
+  TaskCompletionContract,
   TaskContractResult,
   TaskMetadata,
   TaskOutputFieldContract,
@@ -24,6 +25,7 @@ import { toTaskView, type Task } from "./task-view.js";
 export type TaskStatus = "pending" | "in_progress" | "done" | "failed";
 type TaskRecord = typeof tasks.$inferSelect;
 export type TaskErrorCode = "CLIENT" | "SERVER";
+export type TaskRejectionCode = "STALE_ATTEMPT";
 
 export interface TaskOk<T> {
   ok: true;
@@ -36,7 +38,18 @@ export interface TaskErr {
   error: string;
 }
 
+export interface TaskRejected {
+  ok: false;
+  code: TaskRejectionCode;
+  taskId: string;
+  attemptId?: string;
+  currentStatus: TaskStatus;
+  currentVersion: number;
+  attemptClosed: true;
+}
+
 export type TaskResult<T> = TaskOk<T> | TaskErr;
+export type TaskUpdateResult = TaskResult<Task> | TaskRejected;
 
 export interface CreateTaskOpts {
   title: string;
@@ -47,6 +60,9 @@ export interface CreateTaskOpts {
 }
 
 export interface UpdateTaskOpts {
+  // CALIBRATION: PR1 treats attemptId as a correlation token only; PR2 should decide whether the hub owns attempt identity validation.
+  attemptId?: string;
+  expectedTaskVersion?: number;
   contractResult?: TaskContractResult;
   resultMeta?: TaskResultMeta;
   status?: TaskStatus;
@@ -68,6 +84,19 @@ function clientErr(error: string): TaskErr {
 
 function serverErr(error: string): TaskErr {
   return { ok: false, code: "SERVER", error };
+}
+
+function staleAttempt(task: TaskRecord, attemptId?: string): TaskRejected {
+  const rejected: TaskRejected = {
+    ok: false,
+    code: "STALE_ATTEMPT",
+    taskId: task.id,
+    currentStatus: task.status as TaskStatus,
+    currentVersion: task.version,
+    attemptClosed: true,
+  };
+  if (attemptId) rejected.attemptId = attemptId;
+  return rejected;
 }
 
 function formatValidationIssues(issues: ValidationIssue[]): string {
@@ -99,6 +128,7 @@ function normalizeOutputPath(
 }
 
 function isValidInlineOutputType(value: unknown, expectedType: TaskOutputFieldContract["type"]): boolean {
+  if (expectedType === undefined) return true;
   switch (expectedType) {
     case "string":
       return typeof value === "string";
@@ -313,7 +343,7 @@ async function finalizeTaskUpdate(
   requesterId: string,
   task: Task,
   opts: UpdateTaskOpts,
-): Promise<TaskResult<Task> | null> {
+): Promise<TaskUpdateResult | null> {
   const requestedContractId = task.completionContract?.contractId?.trim();
   const handler = requestedContractId ? taskFinalize.getFinalizeHandler(requestedContractId) : null;
   if (opts.status !== "done" || !handler || !opts.contractResult) {
@@ -346,8 +376,12 @@ async function finalizeTaskUpdate(
 
   const now = new Date();
   try {
-    await db.transaction(async (tx) => {
-      await tx
+    const updated = await db.transaction(async (tx) => {
+      const whereClause = opts.expectedTaskVersion !== undefined
+        ? and(eq(tasks.id, task.id), eq(tasks.version, opts.expectedTaskVersion))
+        : eq(tasks.id, task.id);
+
+      return tx
         .update(tasks)
         .set({
           status: "done",
@@ -358,8 +392,27 @@ async function finalizeTaskUpdate(
           changedBy: requesterId,
           updatedAt: now,
         })
-        .where(eq(tasks.id, task.id));
+        .where(whereClause)
+        .returning();
     });
+
+    if (updated.length === 0) {
+      await Promise.all(createdArtifacts.map((artifactPath) =>
+        taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
+          logger.warn(
+            {
+              taskId: task.id,
+              cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+            "Failed to clean up finalized artifact after stale update rejection",
+          );
+        })
+      ));
+      const current = await db.query.tasks.findFirst({ where: eq(tasks.id, task.id) });
+      return current
+        ? staleAttempt(current, opts.attemptId)
+        : serverErr("Failed to retrieve current task after stale finalize rejection");
+    }
   } catch (error) {
     await Promise.all(createdArtifacts.map((artifactPath) =>
       taskFinalize.removeArtifact(repoRoot ?? "", artifactPath).catch((cleanupError) => {
@@ -516,7 +569,7 @@ export async function updateTask(
   requesterId: string,
   taskId: string,
   opts: UpdateTaskOpts
-): Promise<TaskResult<Task>> {
+): Promise<TaskUpdateResult> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
   });
@@ -533,6 +586,15 @@ export async function updateTask(
   }
 
   const currentStatus = task.status as TaskStatus;
+  const isConditionalWrite = opts.expectedTaskVersion !== undefined;
+
+  if (isConditionalWrite && opts.expectedTaskVersion !== task.version) {
+    return staleAttempt(task, opts.attemptId);
+  }
+
+  if (isConditionalWrite && (currentStatus === "done" || currentStatus === "failed")) {
+    return staleAttempt(task, opts.attemptId);
+  }
 
   // Terminal states are immutable — no status changes, no result overwrites
   if (currentStatus === "done" || currentStatus === "failed") {
@@ -564,7 +626,11 @@ export async function updateTask(
   }
 
   const now = new Date();
-  await db
+  const whereClause = opts.expectedTaskVersion !== undefined
+    ? and(eq(tasks.id, taskId), eq(tasks.version, opts.expectedTaskVersion))
+    : eq(tasks.id, taskId);
+
+  const [updated] = await db
     .update(tasks)
     .set({
       ...(opts.status !== undefined ? { status: opts.status } : {}),
@@ -575,11 +641,17 @@ export async function updateTask(
       changedBy: requesterId,
       updatedAt: now,
     })
-    .where(eq(tasks.id, taskId));
+    .where(whereClause)
+    .returning();
 
-  const updated = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
   if (!updated) {
-    return serverErr("Failed to retrieve updated task");
+    if (isConditionalWrite) {
+      const current = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+      return current
+        ? staleAttempt(current, opts.attemptId)
+        : serverErr("Failed to retrieve current task after stale update rejection");
+    }
+    return serverErr("Failed to update task");
   }
 
   logger.info({ taskId, requesterId, newStatus: opts.status }, "Task updated");

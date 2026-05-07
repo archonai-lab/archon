@@ -422,6 +422,66 @@ describe("HubServer", () => {
       expect(await observerUpdated).toBe("timeout");
     });
 
+    it("returns task.update.rejected for stale conditional writes without broadcasting task.updated", async () => {
+      const requester = await connect();
+      const assignee = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(assignee, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+      });
+
+      const created = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Hub stale conditional write",
+        assignedTo: TEST_INVITEE_ID,
+      }) as { type: string; task: { id: string; version: number } };
+      await waitForMessageType(assignee, "task.created");
+
+      const requesterInProgress = waitForMessageType(requester, "task.updated");
+      const inProgress = await sendAndReceive(assignee, {
+        type: "task.update",
+        taskId: created.task.id,
+        status: "in_progress",
+      }) as { type: string; task: { version: number } };
+      await requesterInProgress;
+
+      expect(inProgress).toMatchObject({
+        type: "task.updated",
+        task: {
+          version: created.task.version + 1,
+        },
+      });
+
+      const requesterUpdated = expectNoMessageType(requester, "task.updated", 300);
+      const stale = await sendAndReceive(assignee, {
+        type: "task.update",
+        taskId: created.task.id,
+        attemptId: "hub-attempt-stale",
+        expectedTaskVersion: created.task.version,
+        status: "failed",
+        result: "stale mutation",
+      });
+
+      expect(stale).toEqual({
+        type: "task.update.rejected",
+        accepted: false,
+        code: "STALE_ATTEMPT",
+        taskId: created.task.id,
+        attemptId: "hub-attempt-stale",
+        currentStatus: "in_progress",
+        currentVersion: inProgress.task.version,
+        attemptClosed: true,
+      });
+      expect(await requesterUpdated).toBe("timeout");
+    });
+
     it("allows global task-board viewers to fetch tasks with task.get", async () => {
       const requester = await connect();
       const globalViewer = await connect();
