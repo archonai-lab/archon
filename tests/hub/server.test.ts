@@ -422,6 +422,112 @@ describe("HubServer", () => {
       expect(await observerUpdated).toBe("timeout");
     });
 
+    it("broadcasts operator events and exposes latest, by-task, and detail read surfaces", async () => {
+      const requester = await connect();
+      const operator = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(operator, {
+        type: "auth",
+        agentId: TEST_GLOBAL_VIEWER_ID,
+        token: TEST_GLOBAL_VIEWER_ID,
+      });
+
+      const broadcast = waitForMessageType(operator, "operator.event");
+      const created = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Operator feed read surface task",
+        assignedTo: TEST_AGENT_ID,
+      }) as { type: string; task: { id: string } };
+      const operatorEvent = await broadcast;
+
+      expect(operatorEvent).toMatchObject({
+        type: "operator.event",
+        event: {
+          kind: "lifecycle",
+          taskId: created.task.id,
+          summary: expect.stringContaining(created.task.id),
+        },
+      });
+
+      operator.send(JSON.stringify({
+        type: "operator.feed.by_task",
+        taskId: created.task.id,
+        limit: 10,
+      }));
+      const byTask = await waitForMessageType(operator, "operator.feed.by_task.result");
+      const taskEvents = byTask.events as Array<{ eventId: string; kind: string; taskId: string }>;
+      expect(taskEvents.map((event) => event.kind)).toContain("lifecycle");
+
+      operator.send(JSON.stringify({ type: "operator.feed.latest", limit: 10 }));
+      const latest = await waitForMessageType(operator, "operator.feed.latest.result");
+      expect(latest.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ taskId: created.task.id }),
+      ]));
+
+      operator.send(JSON.stringify({
+        type: "operator.feed.detail",
+        eventId: taskEvents[0].eventId,
+      }));
+      const detail = await waitForMessageType(operator, "operator.feed.detail.result");
+      expect(detail.event).toMatchObject({
+        eventId: taskEvents[0].eventId,
+        taskId: created.task.id,
+      });
+    });
+
+    it("makes malformed task progress visible as validation_error in the operator feed", async () => {
+      const requester = await connect();
+      const operator = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(operator, {
+        type: "auth",
+        agentId: TEST_GLOBAL_VIEWER_ID,
+        token: TEST_GLOBAL_VIEWER_ID,
+      });
+
+      const validationBroadcast = waitForMessageType(operator, "operator.event");
+      const error = await sendAndReceive(requester, {
+        type: "task.update",
+        taskId: "malformed-progress-task",
+        status: "working",
+      });
+      const operatorEvent = await validationBroadcast;
+
+      expect(error).toMatchObject({ type: "error" });
+      expect(operatorEvent).toMatchObject({
+        type: "operator.event",
+        event: {
+          kind: "validation_error",
+          taskId: "malformed-progress-task",
+          severity: "error",
+          summary: expect.stringContaining("schema validation"),
+        },
+      });
+
+      operator.send(JSON.stringify({
+        type: "operator.feed.by_task",
+        taskId: "malformed-progress-task",
+        limit: 5,
+      }));
+      const byTask = await waitForMessageType(operator, "operator.feed.by_task.result");
+      expect(byTask.events).toEqual([
+        expect.objectContaining({
+          kind: "validation_error",
+          taskId: "malformed-progress-task",
+        }),
+      ]);
+    });
+
     it("returns task.update.rejected for stale conditional writes without broadcasting task.updated", async () => {
       const requester = await connect();
       const assignee = await connect();

@@ -226,6 +226,30 @@ export const TaskUpdateMessage = z.object({
   result_meta: taskResultMetaSchema.optional(),
 });
 
+// --- Operator Event Feed ---
+
+export const OperatorFeedLatestMessage = z.object({
+  type: z.literal("operator.feed.latest"),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
+export const OperatorFeedByTaskMessage = z.object({
+  type: z.literal("operator.feed.by_task"),
+  taskId: z.string().min(1),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
+export const OperatorFeedByMeetingMessage = z.object({
+  type: z.literal("operator.feed.by_meeting"),
+  meetingId: z.string().min(1),
+  limit: z.number().int().min(1).max(200).optional(),
+});
+
+export const OperatorFeedDetailMessage = z.object({
+  type: z.literal("operator.feed.detail"),
+  eventId: z.string().min(1),
+});
+
 // --- Ping/Pong ---
 
 export const PingMessage = z.object({ type: z.literal("ping") });
@@ -278,6 +302,11 @@ export const InboundMessage = z.discriminatedUnion("type", [
   TaskListMessage,
   TaskGetMessage,
   TaskUpdateMessage,
+  // Operator Event Feed
+  OperatorFeedLatestMessage,
+  OperatorFeedByTaskMessage,
+  OperatorFeedByMeetingMessage,
+  OperatorFeedDetailMessage,
   // Hub config
   ConfigGetMessage,
   ConfigSetMessage,
@@ -314,4 +343,8 @@ export type TaskCreateMessage = z.infer<typeof TaskCreateMessage>;
 export type TaskListMessage = z.infer<typeof TaskListMessage>;
 export type TaskGetMessage = z.infer<typeof TaskGetMessage>;
 export type TaskUpdateMessage = z.infer<typeof TaskUpdateMessage>;
+export type OperatorFeedLatestMessage = z.infer<typeof OperatorFeedLatestMessage>;
+export type OperatorFeedByTaskMessage = z.infer<typeof OperatorFeedByTaskMessage>;
+export type OperatorFeedByMeetingMessage = z.infer<typeof OperatorFeedByMeetingMessage>;
+export type OperatorFeedDetailMessage = z.infer<typeof OperatorFeedDetailMessage>;
 export type InboundMessage = z.infer<typeof InboundMessage>;
