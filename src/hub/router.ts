@@ -22,11 +22,22 @@ import { EventFeedStore, type OperatorEventIntent } from "../operator/event-feed
 import { logger } from "../utils/logger.js";
 
 const MVP_OPERATOR_FEED_VIEWERS = new Set(["ceo", "levia"]);
+// Helper clients are short-lived MCP RPC sockets for task tools. They can
+// report task state, but they must not own agent presence or meeting lifecycle.
+const HELPER_ALLOWED_MESSAGE_TYPES = new Set(["ping", "task.list", "task.get", "task.update"]);
+
+type ClientKind = "primary" | "helper";
+
+interface SocketAuth {
+  agentId: string;
+  clientKind: ClientKind;
+}
 
 export class Router {
   private activeMeetings = new Map<string, MeetingRoom>();
   private spawner: AgentSpawner;
   private disconnectCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private socketAuth = new WeakMap<WebSocket, SocketAuth>();
   private shuttingDown = false;
   // CALIBRATION: 5s reconnect window keeps brief socket churn from killing a
   // meeting, while still clearing abandoned meeting state quickly enough to
@@ -88,11 +99,12 @@ export class Router {
     }
 
     // If this socket is not authenticated yet, only allow auth messages
-    const agentId = this.getAgentIdForSocket(socket);
-    if (!agentId) {
+    const auth = this.getSocketAuth(socket);
+    if (!auth) {
       await this.handleAuth(socket, data);
       return;
     }
+    const { agentId, clientKind } = auth;
 
     // Parse as known inbound message
     const parsed = InboundMessage.safeParse(data);
@@ -104,10 +116,7 @@ export class Router {
         },
         "Inbound message failed schema validation"
       );
-      this.sessions.send(
-        agentId,
-        createError(ErrorCode.INVALID_MESSAGE)
-      );
+      this.replyToRequester(agentId, socket, createError(ErrorCode.INVALID_MESSAGE));
       this.appendOperatorEvent({
         actor: { id: agentId, type: "agent" },
         source: "hub.router.inbound",
@@ -127,9 +136,15 @@ export class Router {
 
     const message = parsed.data;
 
+    if (clientKind === "helper" && !HELPER_ALLOWED_MESSAGE_TYPES.has(message.type)) {
+      logger.warn({ agentId, type: message.type }, "Helper client attempted disallowed hub message");
+      this.replyToRequester(agentId, socket, createError(ErrorCode.PERMISSION_DENIED));
+      return;
+    }
+
     switch (message.type) {
       case "ping":
-        this.sessions.send(agentId, { type: "pong" });
+        this.replyToRequester(agentId, socket, { type: "pong" });
         break;
 
       case "agent.status":
@@ -287,15 +302,15 @@ export class Router {
         break;
 
       case "task.list":
-        await this.handleTaskList(agentId);
+        await this.handleTaskList(agentId, socket);
         break;
 
       case "task.get":
-        await this.handleTaskGet(agentId, message.taskId);
+        await this.handleTaskGet(agentId, socket, message.taskId);
         break;
 
       case "task.update":
-        await this.handleTaskUpdate(agentId, message);
+        await this.handleTaskUpdate(agentId, socket, message);
         break;
 
       case "operator.feed.latest":
@@ -340,7 +355,7 @@ export class Router {
       return;
     }
 
-    const { agentId, token } = parsed.data;
+    const { agentId, token, clientKind = "primary" } = parsed.data;
 
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, agentId),
@@ -368,17 +383,23 @@ export class Router {
       return;
     }
 
-    const addResult = this.sessions.add(agentId, socket);
-    if (!addResult.ok) {
-      logger.warn({ agentId }, "Auth rejected — agent already has an active session");
-      socket.send(
-        JSON.stringify(createError(ErrorCode.ALREADY_IN_MEETING))
-      );
-      socket.close(4002, "Already in meeting");
-      return;
+    if (clientKind === "primary") {
+      const addResult = this.sessions.add(agentId, socket);
+      if (!addResult.ok) {
+        logger.warn({ agentId }, "Auth rejected — agent already has an active session");
+        socket.send(
+          JSON.stringify(createError(ErrorCode.ALREADY_IN_MEETING))
+        );
+        socket.close(4002, "Already in meeting");
+        return;
+      }
+
+      this.clearDisconnectCleanup(agentId);
+    } else {
+      logger.info({ agentId, clientKind }, "Agent helper authenticated without owning session");
     }
 
-    this.clearDisconnectCleanup(agentId);
+    this.socketAuth.set(socket, { agentId, clientKind });
 
     const agentCard = await getAgentCard(agentId);
 
@@ -393,26 +414,28 @@ export class Router {
       budgetRemaining: number;
     }> = [];
 
-    for (const [meetingId, room] of this.activeMeetings) {
-      if (!room.getParticipants().includes(agentId)) continue;
+    if (clientKind === "primary") {
+      for (const [meetingId, room] of this.activeMeetings) {
+        if (!room.getParticipants().includes(agentId)) continue;
 
-      if (room.getJoined().includes(agentId)) {
-        // Already joined — this is a reconnect, re-add to joined set
-        activeMeetings.push({
-          meetingId,
-          title: room.title,
-          phase: room.getPhase(),
-          initiator: room.initiatorId,
-          participants: room.getParticipants(),
-          budgetRemaining: room.tokenBudget - room.getTokensUsed(),
-        });
-        // Update session to track current meeting
-        const session = this.sessions.get(agentId);
-        if (session && !session.currentMeetingId) {
-          this.sessions.setMeeting(agentId, meetingId);
+        if (room.getJoined().includes(agentId)) {
+          // Already joined — this is a reconnect, re-add to joined set
+          activeMeetings.push({
+            meetingId,
+            title: room.title,
+            phase: room.getPhase(),
+            initiator: room.initiatorId,
+            participants: room.getParticipants(),
+            budgetRemaining: room.tokenBudget - room.getTokensUsed(),
+          });
+          // Update session to track current meeting
+          const session = this.sessions.get(agentId);
+          if (session && !session.currentMeetingId) {
+            this.sessions.setMeeting(agentId, meetingId);
+          }
+        } else {
+          pendingInvites.push(meetingId);
         }
-      } else {
-        pendingInvites.push(meetingId);
       }
     }
 
@@ -425,7 +448,7 @@ export class Router {
       })
     );
 
-    logger.info({ agentId, activeMeetings: activeMeetings.length, pendingInvites: pendingInvites.length }, "Agent authenticated");
+    logger.info({ agentId, clientKind, activeMeetings: activeMeetings.length, pendingInvites: pendingInvites.length }, "Agent authenticated");
   }
 
   // --- Directory ---
@@ -1299,26 +1322,27 @@ export class Router {
     }
   }
 
-  private async handleTaskList(agentId: string): Promise<void> {
+  private async handleTaskList(agentId: string, socket: WebSocket): Promise<void> {
     const result = await listTasks(agentId);
     if (!result.ok) return;
-    this.sessions.send(agentId, { type: 'task.list.result', tasks: result.data.tasks, total: result.data.total });
+    this.replyToRequester(agentId, socket, { type: 'task.list.result', tasks: result.data.tasks, total: result.data.total });
   }
 
-  private async handleTaskGet(agentId: string, taskId: string): Promise<void> {
+  private async handleTaskGet(agentId: string, socket: WebSocket, taskId: string): Promise<void> {
     const result = await getTask(agentId, taskId);
 
     if (!result.ok) {
       const code = result.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(result.error);
-      this.sessions.send(agentId, createError(code, result.error));
+      this.replyToRequester(agentId, socket, createError(code, result.error));
       return;
     }
 
-    this.sessions.send(agentId, { type: 'task.get.result', task: result.data });
+    this.replyToRequester(agentId, socket, { type: 'task.get.result', task: result.data });
   }
 
   private async handleTaskUpdate(
     agentId: string,
+    socket: WebSocket,
     msg: {
       taskId: string;
       attemptId?: string;
@@ -1351,16 +1375,19 @@ export class Router {
           attemptClosed: updateResult.attemptClosed,
           ...(updateResult.attemptId ? { attemptId: updateResult.attemptId } : {}),
         };
-        this.sessions.send(agentId, rejection);
+        this.replyToRequester(agentId, socket, rejection);
         return;
       }
 
       const code = updateResult.code === "SERVER" ? ErrorCode.INTERNAL_ERROR : this.mapTaskClientError(updateResult.error);
-      this.sessions.send(agentId, createError(code, updateResult.error));
+      this.replyToRequester(agentId, socket, createError(code, updateResult.error));
       return;
     }
 
     await this.emitTaskUpdated(updateResult.data, agentId);
+    if (this.getSocketAuth(socket)?.clientKind === "helper" && socket.readyState === socket.OPEN) {
+      socket.send(JSON.stringify({ type: "task.updated", task: updateResult.data }));
+    }
     this.appendTaskEvent(
       updateResult.data.status === "done" || updateResult.data.status === "failed" ? "result" : "progress",
       updateResult.data,
@@ -1384,8 +1411,19 @@ export class Router {
   }
 
   handleSocketClosed(socket: WebSocket): void {
-    const agentId = this.getAgentIdForSocket(socket);
-    if (!agentId) return;
+    const auth = this.getSocketAuth(socket);
+    if (!auth) return;
+    this.socketAuth.delete(socket);
+    const { agentId, clientKind } = auth;
+    if (clientKind === "helper") {
+      logger.info({ agentId, clientKind }, "Helper socket closed");
+      return;
+    }
+    const session = this.sessions.get(agentId);
+    if (session?.socket !== socket) {
+      logger.info({ agentId }, "Ignoring close from superseded primary socket");
+      return;
+    }
     this.handleAgentDisconnected(agentId);
   }
 
@@ -1449,13 +1487,29 @@ export class Router {
     return room;
   }
 
-  private getAgentIdForSocket(socket: WebSocket): string | undefined {
+  private getSocketAuth(socket: WebSocket): SocketAuth | undefined {
+    const auth = this.socketAuth.get(socket);
+    if (auth) return auth;
+
     for (const session of this.sessions.getAll()) {
       if (session.socket === socket) {
-        return session.agentId;
+        return { agentId: session.agentId, clientKind: "primary" };
       }
     }
     return undefined;
+  }
+
+  private getAgentIdForSocket(socket: WebSocket): string | undefined {
+    return this.getSocketAuth(socket)?.agentId;
+  }
+
+  private replyToRequester(agentId: string, socket: WebSocket, message: unknown): boolean {
+    const auth = this.getSocketAuth(socket);
+    if (auth?.clientKind === "helper" && socket.readyState === socket.OPEN) {
+      socket.send(JSON.stringify(message));
+      return true;
+    }
+    return this.sessions.send(agentId, message);
   }
 
   // --- Expose for testing ---
