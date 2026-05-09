@@ -375,6 +375,39 @@ describe("HubServer", () => {
       expect(reply).toEqual({ type: "pong" });
     });
 
+    it("authenticates helper clients without replacing the primary session", async () => {
+      const primary = await connect();
+      await sendAndReceive(primary, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+
+      const primaryClose = new Promise<"closed" | "open">((resolve) => {
+        primary.once("close", () => resolve("closed"));
+        setTimeout(() => resolve("open"), 150);
+      });
+
+      const helper = await connect();
+      const helperAuth = await sendAndReceive(helper, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+        clientKind: "helper",
+      });
+
+      expect(helperAuth).toMatchObject({ type: "auth.ok", pendingInvites: [] });
+      expect(await primaryClose).toBe("open");
+      expect(await sendAndReceive(primary, { type: "ping" })).toEqual({ type: "pong" });
+      expect(await sendAndReceive(helper, { type: "ping" })).toEqual({ type: "pong" });
+
+      const disallowed = await sendAndReceive(helper, {
+        type: "meeting.join",
+        meetingId: "helper-must-not-join",
+      });
+      expect(disallowed).toMatchObject({ type: "error", code: "PERMISSION_DENIED" });
+    });
+
     it("sends task.created and task.updated only to the requester and assignee, not unrelated sessions", async () => {
       const requester = await connect();
       const assignee = await connect();
@@ -420,6 +453,56 @@ describe("HubServer", () => {
       expect(await requesterUpdated).toMatchObject({ type: "task.updated" });
       expect(updatedForAssignee).toMatchObject({ type: "task.updated" });
       expect(await observerUpdated).toBe("timeout");
+    });
+
+    it("keeps the primary task runner session alive when a helper updates and disconnects", async () => {
+      const requester = await connect();
+      const assigneePrimary = await connect();
+      const assigneeHelper = await connect();
+
+      await sendAndReceive(requester, {
+        type: "auth",
+        agentId: TEST_AGENT_ID,
+        token: TEST_AGENT_ID,
+      });
+      await sendAndReceive(assigneePrimary, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+      });
+      await sendAndReceive(assigneeHelper, {
+        type: "auth",
+        agentId: TEST_INVITEE_ID,
+        token: TEST_INVITEE_ID,
+        clientKind: "helper",
+      });
+
+      expect(await sendAndReceive(assigneePrimary, { type: "ping" })).toEqual({ type: "pong" });
+
+      const createdForAssignee = waitForMessageType(assigneePrimary, "task.created");
+      const created = await sendAndReceive(requester, {
+        type: "task.create",
+        title: "Helper update session ownership check",
+        assignedTo: TEST_INVITEE_ID,
+      }) as { type: string; task: { id: string } };
+      await createdForAssignee;
+
+      const requesterUpdated = waitForMessageType(requester, "task.updated");
+      const primaryUpdated = waitForMessageType(assigneePrimary, "task.updated");
+      const helperUpdated = await sendAndReceive(assigneeHelper, {
+        type: "task.update",
+        taskId: created.task.id,
+        status: "in_progress",
+      });
+
+      expect(helperUpdated).toMatchObject({ type: "task.updated" });
+      expect(await requesterUpdated).toMatchObject({ type: "task.updated" });
+      expect(await primaryUpdated).toMatchObject({ type: "task.updated" });
+
+      assigneeHelper.close();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(await sendAndReceive(assigneePrimary, { type: "ping" })).toEqual({ type: "pong" });
     });
 
     it("broadcasts operator events and exposes latest, by-task, and detail read surfaces", async () => {

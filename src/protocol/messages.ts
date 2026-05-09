@@ -21,6 +21,7 @@ export const AuthMessage = z.object({
   type: z.literal("auth"),
   agentId: z.string().min(1),
   token: z.string().min(1),
+  clientKind: z.enum(["primary", "helper"]).optional(),
 });
 
 export const AuthOkMessage = z.object({
