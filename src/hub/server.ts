@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { SessionManager } from "./session.js";
 import { Router } from "./router.js";
 import { createError } from "../protocol/errors.js";
+import { EventFeedStore } from "../operator/event-feed.js";
 import { logger } from "../utils/logger.js";
 
 // CALIBRATION: 30s ping interval — frequent enough to detect dead sockets before
@@ -25,6 +26,14 @@ export interface HubServerOptions {
    * participant triggers meeting cleanup. Only set this in tests.
    */
   disconnectGraceMs?: number;
+  /**
+   * Override operator feed capacity. Only set this in tests.
+   */
+  eventFeedCapacity?: number;
+  /**
+   * Inject a store for tests or embedding.
+   */
+  eventFeed?: EventFeedStore;
 }
 
 export class HubServer {
@@ -38,6 +47,9 @@ export class HubServer {
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.router = new Router(this.sessions, {
       disconnectGraceMs: options.disconnectGraceMs,
+      eventFeed: options.eventFeed ?? (
+        options.eventFeedCapacity ? new EventFeedStore({ capacity: options.eventFeedCapacity }) : undefined
+      ),
     });
   }
 
@@ -151,5 +163,9 @@ export class HubServer {
 
   getActiveMeetingsCount(): number {
     return this.router.getActiveMeetings().size;
+  }
+
+  getEventFeedStore(): EventFeedStore {
+    return this.router.getEventFeedStore();
   }
 }

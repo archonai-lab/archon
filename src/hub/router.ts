@@ -18,7 +18,10 @@ import { listMeetings, getMeetingTranscript } from "../meeting/meeting-queries.j
 import { getLLMConfig, setLLMConfig, isLLMAvailable } from "../meeting/summarizer.js";
 import { AgentSpawner } from "./agent-spawner.js";
 import { canViewAllTasks, createTask, listTasks, getTask, updateTask } from "../tasks/task-crud.js";
+import { EventFeedStore, type OperatorEventIntent } from "../operator/event-feed.js";
 import { logger } from "../utils/logger.js";
+
+const MVP_OPERATOR_FEED_VIEWERS = new Set(["ceo", "levia"]);
 
 export class Router {
   private activeMeetings = new Map<string, MeetingRoom>();
@@ -32,13 +35,44 @@ export class Router {
 
   constructor(
     private sessions: SessionManager,
-    options: { disconnectGraceMs?: number } = {},
+    options: { disconnectGraceMs?: number; eventFeed?: EventFeedStore } = {},
   ) {
     const wsPort = parseInt(process.env.WS_PORT ?? "9500", 10);
     this.spawner = new AgentSpawner(`ws://127.0.0.1:${wsPort}`, {
       onProcessExit: (agentId, code, signal) => this.handleAgentProcessExit(agentId, code, signal),
     });
     this.disconnectGraceMs = options.disconnectGraceMs ?? 5_000;
+    this.eventFeed = options.eventFeed ?? new EventFeedStore();
+    this.eventFeed.subscribe((event) => {
+      void this.broadcastOperatorEvent(event);
+    });
+  }
+
+  private eventFeed: EventFeedStore;
+
+  private async canViewOperatorFeed(agentId: string): Promise<boolean> {
+    // MVP bridge: ceo and levia own the operator board before durable roles exist.
+    // Keep this before the DB-backed permission read so their access does not
+    // depend on seed timing or local database availability.
+    if (MVP_OPERATOR_FEED_VIEWERS.has(agentId)) return true;
+
+    const { hasPermission } = await import("./permissions.js");
+    return hasPermission(agentId, "operator:*", "read");
+  }
+
+  private async broadcastOperatorEvent(event: unknown): Promise<void> {
+    for (const session of this.sessions.getAll()) {
+      try {
+        if (await this.canViewOperatorFeed(session.agentId)) {
+          this.sessions.send(session.agentId, { type: "operator.event", event });
+        }
+      } catch (error) {
+        logger.warn(
+          { agentId: session.agentId, err: error },
+          "Operator event permission check failed; skipping broadcast"
+        );
+      }
+    }
   }
 
   async handleRaw(socket: WebSocket, raw: string): Promise<void> {
@@ -74,6 +108,20 @@ export class Router {
         agentId,
         createError(ErrorCode.INVALID_MESSAGE)
       );
+      this.appendOperatorEvent({
+        actor: { id: agentId, type: "agent" },
+        source: "hub.router.inbound",
+        kind: "validation_error",
+        taskId: extractStringField(data, "taskId"),
+        meetingId: extractStringField(data, "meetingId"),
+        runId: extractStringField(data, "runId"),
+        severity: "error",
+        payload: {
+          reason: "Inbound message failed schema validation",
+          inboundType: extractStringField(data, "type"),
+          issues: parsed.error.issues.map(({ path, code, message }) => ({ path, code, message })),
+        },
+      });
       return;
     }
 
@@ -248,6 +296,22 @@ export class Router {
 
       case "task.update":
         await this.handleTaskUpdate(agentId, message);
+        break;
+
+      case "operator.feed.latest":
+        await this.handleOperatorFeedLatest(agentId, message.limit);
+        break;
+
+      case "operator.feed.by_task":
+        await this.handleOperatorFeedByTask(agentId, message.taskId, message.limit);
+        break;
+
+      case "operator.feed.by_meeting":
+        await this.handleOperatorFeedByMeeting(agentId, message.meetingId, message.limit);
+        break;
+
+      case "operator.feed.detail":
+        await this.handleOperatorFeedDetail(agentId, message.eventId);
         break;
 
       default:
@@ -472,6 +536,17 @@ export class Router {
     });
 
     logger.info({ meetingId: room.id, initiator: agentId, participants: room.getParticipants() }, "Meeting created");
+    this.appendOperatorEvent({
+      actor: { id: agentId, type: "agent" },
+      source: "hub.router.meeting",
+      kind: "meeting_status",
+      meetingId: room.id,
+      payload: {
+        status: "created",
+        title: room.title,
+        participants: room.getParticipants(),
+      },
+    });
 
     // Auto-spawn agent processes for invitees that aren't already connected
     const allInvitees = room.getParticipants().filter((id) => id !== agentId);
@@ -553,6 +628,13 @@ export class Router {
     });
 
     logger.info({ meetingId, agentId }, "Agent joined meeting");
+    this.appendOperatorEvent({
+      actor: { id: agentId, type: "agent" },
+      source: "hub.router.meeting",
+      kind: "meeting_membership",
+      meetingId,
+      payload: { action: "joined" },
+    });
   }
 
   private handleMeetingLeave(agentId: string, meetingId: string): void {
@@ -565,6 +647,13 @@ export class Router {
     this.sessions.clearMeeting(agentId);
 
     logger.info({ meetingId, agentId }, "Agent left meeting");
+    this.appendOperatorEvent({
+      actor: { id: agentId, type: "agent" },
+      source: "hub.router.meeting",
+      kind: "meeting_membership",
+      meetingId,
+      payload: { action: "left" },
+    });
   }
 
   private async handleMeetingSpeak(agentId: string, meetingId: string, content: string): Promise<void> {
@@ -944,6 +1033,14 @@ export class Router {
     }
 
     await room.cancel(reason ?? "Cancelled by initiator");
+    this.appendOperatorEvent({
+      actor: { id: agentId, type: "agent" },
+      source: "hub.router.meeting",
+      kind: "meeting_status",
+      meetingId,
+      severity: "warn",
+      payload: { status: "cancelled", reason: reason ?? "Cancelled by initiator" },
+    });
   }
 
   // --- Hub config ---
@@ -1065,7 +1162,12 @@ export class Router {
           continue;
         }
 
-        this.emitTaskCreated(created.data, room.initiatorId);
+        await this.emitTaskCreated(created.data, room.initiatorId);
+        this.appendTaskEvent("lifecycle", created.data, room.initiatorId, {
+          action: "created_from_meeting_action_item",
+          title: created.data.title,
+          status: created.data.status,
+        });
 
         if (created.data.assignedTo && (this.spawner.isSpawned(created.data.assignedTo) || !this.sessions.isOnline(created.data.assignedTo))) {
           const spawnResult = await this.spawner.spawnForTask(created.data.assignedTo, created.data.id);
@@ -1091,6 +1193,13 @@ export class Router {
       logger.info({ meetingId, despawned }, "Despawned agents after meeting ended");
     }
     this.activeMeetings.delete(meetingId);
+    this.appendOperatorEvent({
+      actor: { id: "hub", type: "hub" },
+      source: "hub.router.meeting",
+      kind: "meeting_status",
+      meetingId,
+      payload: { status: "ended" },
+    });
 
     // Clean up ephemeral agents that were despawned
     this.cleanupEphemeralAgents(despawned).catch((err) => {
@@ -1168,6 +1277,11 @@ export class Router {
     }
 
     await this.emitTaskCreated(result.data, agentId);
+    this.appendTaskEvent("lifecycle", result.data, agentId, {
+      action: "created",
+      title: result.data.title,
+      status: result.data.status,
+    });
 
     if (result.data.assignedTo && !this.sessions.isOnline(result.data.assignedTo)) {
       const spawnResult = await this.spawner.spawnForTask(result.data.assignedTo, result.data.id);
@@ -1247,6 +1361,16 @@ export class Router {
     }
 
     await this.emitTaskUpdated(updateResult.data, agentId);
+    this.appendTaskEvent(
+      updateResult.data.status === "done" || updateResult.data.status === "failed" ? "result" : "progress",
+      updateResult.data,
+      agentId,
+      {
+        status: updateResult.data.status,
+        version: updateResult.data.version,
+        hasResult: Boolean(updateResult.data.result),
+      },
+    );
 
     if (updateResult.data.status === "done" || updateResult.data.status === "failed") {
       this.spawner.despawnForTask(updateResult.data.id);
@@ -1340,6 +1464,10 @@ export class Router {
     return this.activeMeetings;
   }
 
+  getEventFeedStore(): EventFeedStore {
+    return this.eventFeed;
+  }
+
   private async getTaskAudience(task: unknown, requesterId?: string): Promise<string[]> {
     const audience = new Set<string>();
     if (requesterId) audience.add(requesterId);
@@ -1376,4 +1504,85 @@ export class Router {
       this.sessions.send(agentId, message);
     }
   }
+
+  private async handleOperatorFeedLatest(agentId: string, limit?: number): Promise<void> {
+    const allowed = await this.canViewOperatorFeed(agentId);
+    if (!allowed) {
+      logger.warn({ agentId, reason: "operator.feed.latest permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
+      return;
+    }
+    this.sessions.send(agentId, {
+      type: "operator.feed.latest.result",
+      events: this.eventFeed.latest({ limit }),
+    });
+  }
+
+  private async handleOperatorFeedByTask(agentId: string, taskId: string, limit?: number): Promise<void> {
+    const allowed = await this.canViewOperatorFeed(agentId);
+    if (!allowed) {
+      logger.warn({ agentId, taskId, reason: "operator.feed.by_task permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
+      return;
+    }
+    this.sessions.send(agentId, {
+      type: "operator.feed.by_task.result",
+      taskId,
+      events: this.eventFeed.byTaskId(taskId, { limit }),
+    });
+  }
+
+  private async handleOperatorFeedByMeeting(agentId: string, meetingId: string, limit?: number): Promise<void> {
+    const allowed = await this.canViewOperatorFeed(agentId);
+    if (!allowed) {
+      logger.warn({ agentId, meetingId, reason: "operator.feed.by_meeting permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
+      return;
+    }
+    this.sessions.send(agentId, {
+      type: "operator.feed.by_meeting.result",
+      meetingId,
+      events: this.eventFeed.byMeetingId(meetingId, { limit }),
+    });
+  }
+
+  private async handleOperatorFeedDetail(agentId: string, eventId: string): Promise<void> {
+    const allowed = await this.canViewOperatorFeed(agentId);
+    if (!allowed) {
+      logger.warn({ agentId, eventId, reason: "operator.feed.detail permission denied" }, "Permission denied");
+      this.sessions.send(agentId, createError(ErrorCode.PERMISSION_DENIED));
+      return;
+    }
+    this.sessions.send(agentId, {
+      type: "operator.feed.detail.result",
+      event: this.eventFeed.detail(eventId),
+    });
+  }
+
+  private appendTaskEvent(
+    kind: "lifecycle" | "progress" | "result",
+    task: { id: string; meetingId?: string | null; status?: string },
+    actorId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    this.appendOperatorEvent({
+      actor: { id: actorId, type: "agent" },
+      source: "hub.router.task",
+      kind,
+      taskId: task.id,
+      meetingId: task.meetingId ?? undefined,
+      severity: task.status === "failed" ? "error" : "info",
+      payload,
+    });
+  }
+
+  private appendOperatorEvent(intent: OperatorEventIntent): void {
+    this.eventFeed.append(intent);
+  }
+}
+
+function extractStringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" && field.length > 0 ? field : undefined;
 }
