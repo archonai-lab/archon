@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, closeConnection } from "../../src/db/connection.js";
-import { agents, permissions, tasks } from "../../src/db/schema.js";
+import { agents, permissions, taskObservabilityOutbox, tasks } from "../../src/db/schema.js";
 import {
   createTask,
   listTasks,
@@ -26,6 +26,30 @@ beforeAll(async () => {
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "task_metadata" jsonb');
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "contract_result" jsonb');
   await db.execute('ALTER TABLE "tasks" ADD COLUMN IF NOT EXISTS "result_meta" jsonb');
+  await db.execute(`CREATE TABLE IF NOT EXISTS "task_observability_outbox" (
+    "id" text PRIMARY KEY NOT NULL,
+    "event_id" text NOT NULL,
+    "event_kind" text NOT NULL,
+    "task_id" text NOT NULL REFERENCES "tasks"("id") ON DELETE CASCADE,
+    "task_version" integer NOT NULL,
+    "task_status" text NOT NULL,
+    "assignment_id" text,
+    "agent_id" text,
+    "occurred_at" timestamp with time zone DEFAULT now() NOT NULL,
+    "payload" jsonb NOT NULL,
+    "status" text DEFAULT 'pending' NOT NULL,
+    "attempts" integer DEFAULT 0 NOT NULL,
+    "next_attempt_at" timestamp with time zone DEFAULT now() NOT NULL,
+    "locked_at" timestamp with time zone,
+    "locked_by" text,
+    "dispatched_at" timestamp with time zone,
+    "last_error" text,
+    "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+  )`);
+  await db.execute('CREATE UNIQUE INDEX IF NOT EXISTS "task_observability_outbox_event_id_uq" ON "task_observability_outbox" ("event_id")');
+  await db.execute('CREATE INDEX IF NOT EXISTS "task_observability_outbox_pending_dispatch_idx" ON "task_observability_outbox" ("status", "next_attempt_at", "created_at")');
+  await db.execute('CREATE INDEX IF NOT EXISTS "task_observability_outbox_task_version_idx" ON "task_observability_outbox" ("task_id", "task_version")');
   await db.insert(agents).values([
     { id: CEO_AGENT, displayName: "Task Test CEO", workspacePath: "/tmp/task-test-ceo" },
     { id: LEVIA_AGENT, displayName: "Levia", workspacePath: "~/.archon/agents/levia" },
@@ -35,6 +59,13 @@ beforeAll(async () => {
 
   await grantPermission(CEO_AGENT, "task:*", "admin");
 });
+
+async function taskOutboxRows(taskId: string) {
+  return db
+    .select()
+    .from(taskObservabilityOutbox)
+    .where(eq(taskObservabilityOutbox.taskId, taskId));
+}
 
 afterAll(async () => {
   // Clean up in FK-safe order
@@ -2141,6 +2172,79 @@ describe("terminal-state immutability", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/terminal state/i);
+  });
+});
+
+describe("task observability outbox", () => {
+  it("writes create, lifecycle, and terminal events for successful task mutations", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Outbox tracked task",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const inProgress = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "in_progress",
+    });
+    expect(inProgress.ok).toBe(true);
+
+    const done = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "done",
+      result: "outbox terminal result",
+    });
+    expect(done.ok).toBe(true);
+
+    const rows = (await taskOutboxRows(created.data.id))
+      .sort((a, b) => a.taskVersion - b.taskVersion);
+
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => [row.eventKind, row.taskStatus, row.taskVersion])).toEqual([
+      ["task_created", "pending", 1],
+      ["task_lifecycle", "in_progress", 2],
+      ["task_terminal", "done", 3],
+    ]);
+    expect(rows.map((row) => row.eventId)).toEqual([
+      `task:${created.data.id}:v1:task_created`,
+      `task:${created.data.id}:v2:task_lifecycle`,
+      `task:${created.data.id}:v3:task_terminal`,
+    ]);
+    expect(rows[2]?.agentId).toBe(REGULAR_AGENT);
+    expect(rows[2]?.status).toBe("pending");
+    expect(rows[2]?.payload).toMatchObject({
+      action: "updated",
+      previousStatus: "in_progress",
+      nextStatus: "done",
+      changedFields: ["status", "result"],
+      hasResult: true,
+    });
+  });
+
+  it("does not write an outbox event when a stale conditional update is rejected", async () => {
+    const created = await createTask(CEO_AGENT, {
+      title: "Outbox stale rejection",
+      assignedTo: REGULAR_AGENT,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const inProgress = await updateTask(REGULAR_AGENT, created.data.id, {
+      status: "in_progress",
+    });
+    expect(inProgress.ok).toBe(true);
+
+    const stale = await updateTask(REGULAR_AGENT, created.data.id, {
+      expectedTaskVersion: created.data.version,
+      status: "done",
+      result: "stale write",
+    });
+    expect(stale.ok).toBe(false);
+    if (stale.ok) return;
+    expect(stale.code).toBe("STALE_ATTEMPT");
+
+    const rows = await taskOutboxRows(created.data.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.taskVersion).sort()).toEqual([1, 2]);
   });
 });
 

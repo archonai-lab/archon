@@ -8,6 +8,7 @@ import {
   boolean,
   primaryKey,
   unique,
+  uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
 import type { TaskContractResult, TaskMetadata, TaskResultMeta } from "../tasks/task-metadata.js";
@@ -205,5 +206,41 @@ export const tasks = pgTable(
     index("idx_tasks_assigned_to").on(table.assignedTo),
     index("idx_tasks_status").on(table.status),
     index("idx_tasks_meeting_id").on(table.meetingId),
+  ]
+);
+
+export const taskObservabilityOutbox = pgTable(
+  "task_observability_outbox",
+  {
+    id: text("id").primaryKey(),
+    eventId: text("event_id").notNull(),
+    eventKind: text("event_kind").notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    taskVersion: integer("task_version").notNull(),
+    taskStatus: text("task_status").notNull(),
+    assignmentId: text("assignment_id"),
+    agentId: text("agent_id"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).defaultNow().notNull(),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("task_observability_outbox_event_id_uq").on(table.eventId),
+    index("task_observability_outbox_pending_dispatch_idx").on(
+      table.status,
+      table.nextAttemptAt,
+      table.createdAt,
+    ),
+    index("task_observability_outbox_task_version_idx").on(table.taskId, table.taskVersion),
   ]
 );

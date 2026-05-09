@@ -2,6 +2,13 @@
 
 The operator event feed is the hub-owned audit stream for MVP operator surfaces. It is not a terminal log mirror. Events are structured records that let the operator UI reconstruct task, meeting, validation, and retention history without scraping process output.
 
+Task create/update calls also write durable producer events to
+`task_observability_outbox`. Those rows are committed in the same transaction as
+the task mutation, so a successful task state change has a matching pending
+outbox event and a rejected/stale update has none. The current live operator feed
+remains in-memory; dispatching pending outbox rows into the feed or another
+consumer is a separate step.
+
 ## Contract
 
 Each event has:

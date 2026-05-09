@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/connection.js";
-import { tasks, agents } from "../db/schema.js";
+import { tasks, agents, taskObservabilityOutbox } from "../db/schema.js";
 import { hasPermission } from "../hub/permissions.js";
 import { logger } from "../utils/logger.js";
 import { randomUUID } from "node:crypto";
@@ -26,6 +26,8 @@ export type TaskStatus = "pending" | "in_progress" | "done" | "failed";
 type TaskRecord = typeof tasks.$inferSelect;
 export type TaskErrorCode = "CLIENT" | "SERVER";
 export type TaskRejectionCode = "STALE_ATTEMPT";
+
+type TaskOutboxEventKind = "task_created" | "task_lifecycle" | "task_terminal";
 
 export interface TaskOk<T> {
   ok: true;
@@ -97,6 +99,63 @@ function staleAttempt(task: TaskRecord, attemptId?: string): TaskRejected {
   };
   if (attemptId) rejected.attemptId = attemptId;
   return rejected;
+}
+
+function taskOutboxEventKind(previousStatus: TaskStatus | null, nextStatus: TaskStatus): TaskOutboxEventKind {
+  if (previousStatus === null) return "task_created";
+  return nextStatus === "done" || nextStatus === "failed" ? "task_terminal" : "task_lifecycle";
+}
+
+function changedTaskFields(opts: UpdateTaskOpts): string[] {
+  return [
+    opts.status !== undefined ? "status" : null,
+    opts.result !== undefined ? "result" : null,
+    opts.contractResult !== undefined ? "contractResult" : null,
+    opts.resultMeta !== undefined ? "resultMeta" : null,
+  ].filter((field): field is string => field !== null);
+}
+
+function buildTaskOutboxEvent(params: {
+  action: "created" | "updated" | "finalized";
+  requesterId: string;
+  task: TaskRecord;
+  previousStatus: TaskStatus | null;
+  changedFields?: string[];
+  attemptId?: string;
+  occurredAt: Date;
+}): typeof taskObservabilityOutbox.$inferInsert {
+  const nextStatus = params.task.status as TaskStatus;
+  const eventKind = taskOutboxEventKind(params.previousStatus, nextStatus);
+
+  return {
+    id: randomUUID(),
+    eventId: `task:${params.task.id}:v${params.task.version}:${eventKind}`,
+    eventKind,
+    taskId: params.task.id,
+    taskVersion: params.task.version,
+    taskStatus: nextStatus,
+    assignmentId: null,
+    agentId: params.requesterId,
+    occurredAt: params.occurredAt,
+    payload: {
+      action: params.action,
+      previousStatus: params.previousStatus,
+      nextStatus,
+      changedFields: params.changedFields ?? [],
+      attemptId: params.attemptId ?? null,
+      assignedTo: params.task.assignedTo,
+      assignedBy: params.task.assignedBy,
+      meetingId: params.task.meetingId,
+      hasResult: Boolean(params.task.result),
+      hasContractResult: params.task.contractResult !== null,
+      hasResultMeta: params.task.resultMeta !== null,
+    },
+    status: "pending",
+    attempts: 0,
+    nextAttemptAt: params.occurredAt,
+    createdAt: params.occurredAt,
+    updatedAt: params.occurredAt,
+  };
 }
 
 function formatValidationIssues(issues: ValidationIssue[]): string {
@@ -413,6 +472,16 @@ async function finalizeTaskUpdate(
         return serverErr("Failed to update finalized task");
       }
 
+      await tx.insert(taskObservabilityOutbox).values(buildTaskOutboxEvent({
+        action: "finalized",
+        requesterId,
+        task: updated,
+        previousStatus: currentStatus,
+        changedFields: ["status", "result", "contractResult", "resultMeta"],
+        attemptId: opts.attemptId,
+        occurredAt: now,
+      }));
+
       return { ok: true, data: toTaskView(updated) };
     });
 
@@ -502,20 +571,37 @@ export async function createTask(
   const id = randomUUID();
   const now = new Date();
 
-  await db.insert(tasks).values({
-    id,
-    title: opts.title,
-    description: opts.description,
-    assignedTo: opts.assignedTo,
-    assignedBy: requesterId,
-    meetingId: opts.meetingId,
-    taskMetadata,
-    changedBy: requesterId,
-    createdAt: now,
-    updatedAt: now,
+  const task = await db.transaction(async (tx): Promise<TaskRecord | undefined> => {
+    const [created] = await tx
+      .insert(tasks)
+      .values({
+        id,
+        title: opts.title,
+        description: opts.description,
+        assignedTo: opts.assignedTo,
+        assignedBy: requesterId,
+        meetingId: opts.meetingId,
+        taskMetadata,
+        changedBy: requesterId,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    if (!created) return undefined;
+
+    await tx.insert(taskObservabilityOutbox).values(buildTaskOutboxEvent({
+      action: "created",
+      requesterId,
+      task: created,
+      previousStatus: null,
+      changedFields: ["created"],
+      occurredAt: now,
+    }));
+
+    return created;
   });
 
-  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, id) });
   if (!task) {
     return serverErr("Failed to retrieve created task");
   }
@@ -632,19 +718,36 @@ export async function updateTask(
     ? and(eq(tasks.id, taskId), eq(tasks.version, opts.expectedTaskVersion))
     : eq(tasks.id, taskId);
 
-  const [updated] = await db
-    .update(tasks)
-    .set({
-      ...(opts.status !== undefined ? { status: opts.status } : {}),
-      ...(opts.contractResult !== undefined ? { contractResult: opts.contractResult } : {}),
-      ...(opts.resultMeta !== undefined ? { resultMeta: opts.resultMeta } : {}),
-      ...(opts.result !== undefined ? { result: opts.result } : {}),
-      version: task.version + 1,
-      changedBy: requesterId,
-      updatedAt: now,
-    })
-    .where(whereClause)
-    .returning();
+  const [updated] = await db.transaction(async (tx) => {
+    const updatedRows = await tx
+      .update(tasks)
+      .set({
+        ...(opts.status !== undefined ? { status: opts.status } : {}),
+        ...(opts.contractResult !== undefined ? { contractResult: opts.contractResult } : {}),
+        ...(opts.resultMeta !== undefined ? { resultMeta: opts.resultMeta } : {}),
+        ...(opts.result !== undefined ? { result: opts.result } : {}),
+        version: task.version + 1,
+        changedBy: requesterId,
+        updatedAt: now,
+      })
+      .where(whereClause)
+      .returning();
+
+    const updatedTask = updatedRows[0];
+    if (!updatedTask) return [];
+
+    await tx.insert(taskObservabilityOutbox).values(buildTaskOutboxEvent({
+      action: "updated",
+      requesterId,
+      task: updatedTask,
+      previousStatus: currentStatus,
+      changedFields: changedTaskFields(opts),
+      attemptId: opts.attemptId,
+      occurredAt: now,
+    }));
+
+    return updatedRows;
+  });
 
   if (!updated) {
     if (isConditionalWrite) {
